@@ -12,13 +12,13 @@ Holographic Studio là MVP thiết kế 3D trên trình duyệt máy tính, cho 
 - Điều khiển chuột/bàn phím dự phòng, Undo/Redo và đặt lại cảnh.
 - Tự lưu cảnh trên thiết bị.
 
-| Cử chỉ | Chức năng |
-| --- | --- |
-| Trỏ ngón trỏ | Di chuyển con trỏ holographic |
-| Chụm ngón cái và ngón trỏ | Chọn và kéo vật thể |
-| Nắm tay | Xoay vật thể đang chọn |
-| Chụm bằng hai tay | Thay đổi kích thước |
-| Mở lòng bàn tay | Thả vật thể |
+| Cử chỉ                        | Chức năng                     |
+| ------------------------------- | ------------------------------- |
+| Trỏ ngón trỏ                 | Di chuyển con trỏ holographic |
+| Chụm ngón cái và ngón trỏ | Chọn và kéo vật thể        |
+| Nắm tay                        | Xoay vật thể đang chọn      |
+| Chụm bằng hai tay             | Thay đổi kích thước        |
+| Mở lòng bàn tay              | Thả vật thể                  |
 
 ## Chạy dự án
 
@@ -69,3 +69,7 @@ File GLB do người dùng chọn được lưu cục bộ bằng IndexedDB đ�
 - G8 — Calibration and onboarding: passed
 - G9 — Product hardening: passed
 - G10 — Release candidate: in progress
+
+
+chạy lại bằng lệnh
+pnpm dev trong terminal
