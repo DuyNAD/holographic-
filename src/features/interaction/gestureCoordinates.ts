@@ -1,3 +1,4 @@
+import { Plane, Vector3, type Ray } from 'three'
 import type { HandLandmark } from '../hand-tracking/handTrackingTypes'
 
 export interface NormalizedDevicePoint {
@@ -30,3 +31,11 @@ export function handRotationAngle(landmarks: HandLandmark[]) {
   )
 }
 
+const DRAG_PLANE_NORMAL = new Vector3(0, 0, 1)
+
+// Drags happen on a camera-facing XY plane at the grabbed object's depth, so
+// moving an object by hand never changes its Z position.
+export function intersectDragPlane(ray: Ray, depth: number) {
+  const plane = new Plane(DRAG_PLANE_NORMAL, -depth)
+  return ray.intersectPlane(plane, new Vector3())
+}

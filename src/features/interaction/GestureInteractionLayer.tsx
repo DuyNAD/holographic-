@@ -1,22 +1,22 @@
 import { useThree } from '@react-three/fiber'
 import { useEffect, useRef, type Dispatch } from 'react'
-import { Plane, Raycaster, Vector2, Vector3 } from 'three'
+import { Raycaster, Vector2, Vector3 } from 'three'
 import type { StableGesture } from '../gestures/gestureTypes'
 import type { SceneHistoryAction } from '../scene/sceneHistory'
 import type { SceneState } from '../scene/sceneState'
 import {
   distanceBetweenLandmarks,
   handRotationAngle,
+  intersectDragPlane,
   landmarkToNdc,
 } from './gestureCoordinates'
+import { isOverHud } from './hudHitTest'
 
 interface GestureInteractionLayerProps {
   gestures: StableGesture[]
   sceneState: SceneState
   dispatch: Dispatch<SceneHistoryAction>
 }
-
-const createDragPlane = () => new Plane(new Vector3(0, 0, 1), 0)
 
 export default function GestureInteractionLayer({
   gestures,
@@ -26,8 +26,8 @@ export default function GestureInteractionLayer({
   const { camera, scene } = useThree()
   const sceneStateRef = useRef(sceneState)
   const raycasterRef = useRef(new Raycaster())
-  const dragPlaneRef = useRef(createDragPlane())
   const grabbedIdRef = useRef<string | null>(null)
+  // x/y: object offset from the hand ray hit; z: depth of the drag plane.
   const dragOffsetRef = useRef(new Vector3())
   const scaleStartRef = useRef<{ distance: number; scale: number } | null>(null)
   const rotationStartRef = useRef<{ angle: number; rotation: number } | null>(null)
@@ -95,6 +95,9 @@ export default function GestureInteractionLayer({
       raycasterRef.current.setFromCamera(new Vector2(ndc.x, ndc.y), camera)
 
       if (!grabbedIdRef.current) {
+        // A pinch over a menu or panel must not grab the object behind it.
+        if (isOverHud(indexTip)) return
+
         const hit = raycasterRef.current
           .intersectObjects(scene.children, true)
           .find(({ object }) => typeof object.userData.objectId === 'string')
@@ -114,25 +117,25 @@ export default function GestureInteractionLayer({
           interactionActiveRef.current = true
         }
 
-        const planePoint = new Vector3()
-        if (raycasterRef.current.ray.intersectPlane(dragPlaneRef.current, planePoint)) {
-          dragOffsetRef.current.set(
-            objectModel.position[0] - planePoint.x,
-            objectModel.position[1] - planePoint.y,
-            0,
-          )
-        }
+        const depth = objectModel.position[2]
+        const planePoint = intersectDragPlane(raycasterRef.current.ray, depth)
+        dragOffsetRef.current.set(
+          planePoint ? objectModel.position[0] - planePoint.x : 0,
+          planePoint ? objectModel.position[1] - planePoint.y : 0,
+          depth,
+        )
         return
       }
 
-      const planePoint = new Vector3()
-      if (raycasterRef.current.ray.intersectPlane(dragPlaneRef.current, planePoint)) {
+      const depth = dragOffsetRef.current.z
+      const planePoint = intersectDragPlane(raycasterRef.current.ray, depth)
+      if (planePoint) {
         dispatch({
           type: 'set-position',
           position: [
             planePoint.x + dragOffsetRef.current.x,
             planePoint.y + dragOffsetRef.current.y,
-            0,
+            depth,
           ],
         })
       }

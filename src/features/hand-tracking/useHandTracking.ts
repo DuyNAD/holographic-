@@ -36,7 +36,7 @@ export function useHandTracking(
 
     const worker = new Worker(
       new URL('./handTracking.worker.ts', import.meta.url),
-      { type: 'classic' },
+      { type: 'module' },
     )
 
     const scheduleFrame = () => {

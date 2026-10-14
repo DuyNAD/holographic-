@@ -47,7 +47,7 @@ const createOptions = (
 })
 
 async function initialize() {
-  const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_PATH)
+  const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_PATH, true)
 
   try {
     landmarker = await HandLandmarker.createFromOptions(

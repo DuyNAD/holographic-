@@ -55,3 +55,28 @@ export async function loadModelAsset(id: string) {
     database.close()
   }
 }
+
+export async function listModelAssets() {
+  const database = await openDatabase()
+
+  try {
+    const transaction = database.transaction(STORE_NAME, 'readonly')
+    const assets = (await requestResult(
+      transaction.objectStore(STORE_NAME).getAll(),
+    )) as ModelAssetRecord[]
+    return assets.sort((first, second) => second.createdAt - first.createdAt)
+  } finally {
+    database.close()
+  }
+}
+
+export async function deleteModelAsset(id: string) {
+  const database = await openDatabase()
+
+  try {
+    const transaction = database.transaction(STORE_NAME, 'readwrite')
+    await requestResult(transaction.objectStore(STORE_NAME).delete(id))
+  } finally {
+    database.close()
+  }
+}

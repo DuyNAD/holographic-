@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { HandTrackingState } from '../hand-tracking/handTrackingTypes'
-import CameraPanel from './CameraPanel'
+import CameraWindow from './CameraWindow'
 import { useCamera } from './useCamera'
 
 const idleTracking: HandTrackingState = {
@@ -10,9 +10,9 @@ const idleTracking: HandTrackingState = {
   handedness: [],
 }
 
-function CameraPanelHarness() {
+function CameraWindowHarness() {
   const camera = useCamera()
-  return <CameraPanel camera={camera} handTracking={idleTracking} />
+  return <CameraWindow camera={camera} handTracking={idleTracking} />
 }
 
 const setMediaDevices = (getUserMedia: ReturnType<typeof vi.fn>) => {
@@ -22,7 +22,7 @@ const setMediaDevices = (getUserMedia: ReturnType<typeof vi.fn>) => {
   })
 }
 
-describe('CameraPanel', () => {
+describe('CameraWindow', () => {
   it('starts and stops a local camera stream', async () => {
     const stop = vi.fn()
     const stream = {
@@ -31,7 +31,7 @@ describe('CameraPanel', () => {
     const getUserMedia = vi.fn().mockResolvedValue(stream)
     setMediaDevices(getUserMedia)
 
-    render(<CameraPanelHarness />)
+    render(<CameraWindowHarness />)
     fireEvent.click(screen.getByRole('button', { name: 'Bật camera' }))
 
     expect(
@@ -58,7 +58,7 @@ describe('CameraPanel', () => {
       vi.fn().mockRejectedValue(new DOMException('Denied', 'NotAllowedError')),
     )
 
-    render(<CameraPanelHarness />)
+    render(<CameraWindowHarness />)
     fireEvent.click(screen.getByRole('button', { name: 'Bật camera' }))
 
     expect(await screen.findByText('Thiếu quyền')).toBeInTheDocument()

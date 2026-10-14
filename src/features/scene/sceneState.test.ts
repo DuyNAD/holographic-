@@ -1,4 +1,9 @@
-import { createInitialSceneState, sceneReducer } from './sceneState'
+import {
+  createInitialSceneState,
+  createShapeObject,
+  findSpawnPosition,
+  sceneReducer,
+} from './sceneState'
 
 describe('sceneReducer', () => {
   it('adds and selects an imported model', () => {
@@ -108,5 +113,48 @@ describe('sceneReducer', () => {
       createInitialSceneState(),
     )
   })
-})
 
+  it('removes the selected object and clears the selection', () => {
+    const selected = sceneReducer(createInitialSceneState(), {
+      type: 'select',
+      id: 'sphere-1',
+    })
+    const next = sceneReducer(selected, { type: 'remove-object' })
+
+    expect(next.objects.map(({ id }) => id)).toEqual(['box-1', 'cylinder-1'])
+    expect(next.selectedId).toBeNull()
+  })
+
+  it('removes an object by id and keeps a different selection', () => {
+    const selected = sceneReducer(createInitialSceneState(), {
+      type: 'select',
+      id: 'box-1',
+    })
+    const next = sceneReducer(selected, {
+      type: 'remove-object',
+      id: 'cylinder-1',
+    })
+
+    expect(next.objects.map(({ id }) => id)).toEqual(['box-1', 'sphere-1'])
+    expect(next.selectedId).toBe('box-1')
+  })
+
+  it('ignores removal without a selection or with an unknown id', () => {
+    const initial = createInitialSceneState()
+
+    expect(sceneReducer(initial, { type: 'remove-object' })).toBe(initial)
+    expect(
+      sceneReducer(initial, { type: 'remove-object', id: 'missing' }),
+    ).toBe(initial)
+  })
+
+  it('spawns new objects in a free slot instead of on top of others', () => {
+    const { objects } = createInitialSceneState()
+
+    expect(findSpawnPosition([])).toEqual([0, 0, 0])
+    expect(findSpawnPosition(objects)).toEqual([0, 1.9, 0])
+
+    const crowded = [...objects, createShapeObject('box', [0, 1.9, 0])]
+    expect(findSpawnPosition(crowded)).toEqual([-2.2, 1.9, 0])
+  })
+})

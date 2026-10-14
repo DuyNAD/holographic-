@@ -64,6 +64,103 @@ describe('sceneHistoryReducer', () => {
     )
   })
 
+  it('keeps grouping gesture frames after an undo during an interaction', () => {
+    let state = selectBox(createInitialSceneHistory())
+    state = sceneHistoryReducer(state, { type: 'begin-interaction' })
+    state = sceneHistoryReducer(state, {
+      type: 'set-position',
+      position: [1, 0, 0],
+    })
+    state = sceneHistoryReducer(state, { type: 'undo' })
+
+    expect(state.present.objects[0].position).toEqual([-2.2, 0, 0])
+    expect(state.past).toHaveLength(0)
+    expect(state.future).toHaveLength(1)
+
+    for (let frame = 1; frame <= 10; frame += 1) {
+      state = sceneHistoryReducer(state, {
+        type: 'set-position',
+        position: [frame, 0, 0],
+      })
+    }
+
+    expect(state.past).toHaveLength(0)
+
+    state = sceneHistoryReducer(state, { type: 'end-interaction' })
+
+    expect(state.past).toHaveLength(1)
+    expect(state.future).toHaveLength(0)
+    expect(state.interactionBaseline).toBeNull()
+    expect(
+      sceneHistoryReducer(state, { type: 'undo' }).present.objects[0].position,
+    ).toEqual([-2.2, 0, 0])
+  })
+
+  it('keeps grouping gesture frames after a redo during an interaction', () => {
+    let state = selectBox(createInitialSceneHistory())
+    state = sceneHistoryReducer(state, { type: 'translate', axis: 0, delta: 1 })
+    state = sceneHistoryReducer(state, { type: 'undo' })
+    state = sceneHistoryReducer(state, { type: 'begin-interaction' })
+    state = sceneHistoryReducer(state, { type: 'redo' })
+
+    expect(state.present.objects[0].position[0]).toBeCloseTo(-1.2)
+    expect(state.past).toHaveLength(1)
+
+    state = sceneHistoryReducer(state, {
+      type: 'set-position',
+      position: [3, 0, 0],
+    })
+    state = sceneHistoryReducer(state, {
+      type: 'set-position',
+      position: [4, 0, 0],
+    })
+    state = sceneHistoryReducer(state, { type: 'end-interaction' })
+
+    expect(state.past).toHaveLength(2)
+    expect(
+      sceneHistoryReducer(state, { type: 'undo' }).present.objects[0]
+        .position[0],
+    ).toBeCloseTo(-1.2)
+  })
+
+  it('records discrete edits separately while an interaction is open', () => {
+    let state = selectBox(createInitialSceneHistory())
+    state = sceneHistoryReducer(state, { type: 'begin-interaction' })
+    state = sceneHistoryReducer(state, {
+      type: 'set-position',
+      position: [1, 0, 0],
+    })
+    state = sceneHistoryReducer(state, { type: 'translate', axis: 1, delta: 1 })
+    state = sceneHistoryReducer(state, {
+      type: 'set-position',
+      position: [2, 1, 0],
+    })
+    state = sceneHistoryReducer(state, { type: 'end-interaction' })
+
+    expect(state.past).toHaveLength(3)
+
+    state = sceneHistoryReducer(state, { type: 'undo' })
+    expect(state.present.objects[0].position).toEqual([1, 1, 0])
+    state = sceneHistoryReducer(state, { type: 'undo' })
+    expect(state.present.objects[0].position).toEqual([1, 0, 0])
+    state = sceneHistoryReducer(state, { type: 'undo' })
+    expect(state.present.objects[0].position).toEqual([-2.2, 0, 0])
+  })
+
+  it('lets a scene reset be undone while an interaction is open', () => {
+    let state = selectBox(createInitialSceneHistory())
+    state = sceneHistoryReducer(state, { type: 'translate', axis: 0, delta: 1 })
+    state = sceneHistoryReducer(state, { type: 'begin-interaction' })
+    state = sceneHistoryReducer(state, { type: 'reset' })
+    state = sceneHistoryReducer(state, { type: 'end-interaction' })
+
+    expect(state.past).toHaveLength(2)
+    expect(
+      sceneHistoryReducer(state, { type: 'undo' }).present.objects[0]
+        .position[0],
+    ).toBeCloseTo(-1.2)
+  })
+
   it('does not create history for selection or an unchanged interaction', () => {
     let state = selectBox(createInitialSceneHistory())
     state = sceneHistoryReducer(state, { type: 'begin-interaction' })
@@ -71,5 +168,16 @@ describe('sceneHistoryReducer', () => {
 
     expect(state.past).toHaveLength(0)
   })
-})
 
+  it('undoes and redoes removing an object', () => {
+    const selected = selectBox(createInitialSceneHistory())
+    const removed = sceneHistoryReducer(selected, { type: 'remove-object' })
+    const undone = sceneHistoryReducer(removed, { type: 'undo' })
+    const redone = sceneHistoryReducer(undone, { type: 'redo' })
+
+    expect(removed.present.objects).toHaveLength(2)
+    expect(removed.past).toHaveLength(1)
+    expect(undone.present.objects[0].id).toBe('box-1')
+    expect(redone.present.objects).toHaveLength(2)
+  })
+})

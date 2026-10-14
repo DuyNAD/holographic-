@@ -21,6 +21,7 @@ describe('CalibrationWizard', () => {
         gestures={[]}
         onStartCamera={onStartCamera}
         onComplete={onComplete}
+        onSkip={vi.fn()}
       />,
     )
 
@@ -35,6 +36,7 @@ describe('CalibrationWizard', () => {
         gestures={[]}
         onStartCamera={onStartCamera}
         onComplete={onComplete}
+        onSkip={vi.fn()}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Tiếp tục' }))
@@ -47,6 +49,7 @@ describe('CalibrationWizard', () => {
         gestures={[]}
         onStartCamera={onStartCamera}
         onComplete={onComplete}
+        onSkip={vi.fn()}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Tay đã ở đúng vị trí' }))
@@ -59,6 +62,7 @@ describe('CalibrationWizard', () => {
         gestures={[pinchGesture]}
         onStartCamera={onStartCamera}
         onComplete={onComplete}
+        onSkip={vi.fn()}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Hoàn tất hiệu chuẩn' }))
@@ -66,5 +70,46 @@ describe('CalibrationWizard', () => {
 
     expect(onComplete).toHaveBeenCalledOnce()
   })
-})
 
+  it('can be skipped from any step or with Escape', () => {
+    const onSkip = vi.fn()
+    render(
+      <CalibrationWizard
+        cameraStatus="denied"
+        trackingStatus="idle"
+        gestures={[]}
+        onStartCamera={vi.fn()}
+        onComplete={vi.fn()}
+        onSkip={onSkip}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Bắt đầu hiệu chuẩn' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Bỏ qua, dùng chuột và bàn phím' }),
+    )
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    expect(onSkip).toHaveBeenCalledTimes(2)
+  })
+
+  it('lets the hand pointer press the buttons once tracking can run', () => {
+    render(
+      <CalibrationWizard
+        cameraStatus="active"
+        trackingStatus="tracking"
+        gestures={[pinchGesture]}
+        onStartCamera={vi.fn()}
+        onComplete={vi.fn()}
+        onSkip={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Bắt đầu hiệu chuẩn' }))
+    for (const name of ['Tiếp tục', 'Bỏ qua, dùng chuột và bàn phím']) {
+      expect(screen.getByRole('button', { name })).toHaveAttribute(
+        'data-gesture-target',
+      )
+    }
+  })
+})

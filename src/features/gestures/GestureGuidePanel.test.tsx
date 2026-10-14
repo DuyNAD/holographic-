@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import type { StableGesture } from './gestureTypes'
 import GestureGuidePanel from './GestureGuidePanel'
 
@@ -14,40 +14,42 @@ const createGesture = (
 })
 
 describe('GestureGuidePanel', () => {
-  it('shows every supported interaction', () => {
-    render(<GestureGuidePanel gestures={[]} trackingStatus="no-hand" />)
+  it('shows every supported interaction, including dwell to press', () => {
+    render(<GestureGuidePanel gestures={[]} />)
 
-    expect(screen.getByText('Trỏ')).toBeInTheDocument()
-    expect(screen.getByText('Chụm')).toBeInTheDocument()
-    expect(screen.getByText('Nắm tay')).toBeInTheDocument()
-    expect(screen.getByText('Mở tay')).toBeInTheDocument()
-    expect(screen.getByText('Hai tay chụm')).toBeInTheDocument()
+    for (const name of ['Trỏ', 'Giữ để bấm', 'Chụm', 'Nắm tay', 'Mở tay', 'Hai tay chụm']) {
+      expect(screen.getByText(name)).toBeInTheDocument()
+    }
+    expect(screen.getByText('Trỏ vào nút và giữ yên 1 giây')).toBeInTheDocument()
+  })
+
+  it('explains how to rotate the selected object with a fist', () => {
+    render(<GestureGuidePanel gestures={[]} />)
+
+    const fistRow = screen.getByText('Nắm tay').closest('article')
+    expect(fistRow).toHaveTextContent(
+      'Chọn vật thể trước, nắm tay rồi nghiêng cổ tay',
+    )
+    expect(fistRow).toHaveTextContent('Xoay vật thể theo hướng nghiêng tay')
   })
 
   it('marks a two-hand pinch as active', () => {
     render(
       <GestureGuidePanel
         gestures={[createGesture('pinch', 0), createGesture('pinch', 1)]}
-        trackingStatus="tracking"
       />,
     )
 
-    const twoHandRow = screen.getByText('Hai tay chụm').closest('article')
-    expect(twoHandRow).toHaveClass('is-active')
-    expect(screen.getByText('92%')).toBeInTheDocument()
+    expect(screen.getByText('Hai tay chụm').closest('article')).toHaveClass(
+      'is-active',
+    )
   })
 
-  it('collapses the guide without removing its summary', () => {
-    render(<GestureGuidePanel gestures={[]} trackingStatus="no-hand" />)
+  it('marks dwell as active while pointing', () => {
+    render(<GestureGuidePanel gestures={[createGesture('point', 0)]} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Thu gọn' }))
-
-    expect(screen.queryByText('Hai tay chụm')).not.toBeInTheDocument()
-    expect(screen.getByText('Cử chỉ hiện tại')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Mở rộng' })).toHaveAttribute(
-      'aria-expanded',
-      'false',
+    expect(screen.getByText('Giữ để bấm').closest('article')).toHaveClass(
+      'is-active',
     )
   })
 })
-

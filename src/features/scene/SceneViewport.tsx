@@ -2,7 +2,6 @@ import { Canvas, type ThreeEvent } from '@react-three/fiber'
 import type { Dispatch } from 'react'
 import ImportedModel from '../assets/ImportedModel'
 import type { StableGesture } from '../gestures/gestureTypes'
-import GestureCursors from '../interaction/GestureCursors'
 import GestureInteractionLayer from '../interaction/GestureInteractionLayer'
 import type { SceneHistoryAction } from './sceneHistory'
 import type {
@@ -117,8 +116,7 @@ export default function SceneViewport({
   gestures,
 }: SceneViewportProps) {
   return (
-    <div className="scene-viewport" aria-label="Khung nhìn ba chiều">
-      <p className="viewport-label">3D viewport · chọn một vật thể</p>
+    <div className="scene-viewport" aria-label="Không gian thiết kế 3D">
       <Canvas
         camera={{ position: [6.5, 4.3, 7.5], fov: 42 }}
         dpr={[1, 1.75]}
@@ -128,7 +126,6 @@ export default function SceneViewport({
       >
         <SceneContent scene={scene} dispatch={dispatch} gestures={gestures} />
       </Canvas>
-      <GestureCursors gestures={gestures} />
     </div>
   )
 }

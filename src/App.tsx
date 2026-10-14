@@ -1,19 +1,24 @@
 import {
   lazy,
   Suspense,
+  useCallback,
   useEffect,
   useMemo,
   useReducer,
   useState,
 } from 'react'
-import ModelUploadPanel from './features/assets/ModelUploadPanel'
+import AddObjectPanel from './features/assets/AddObjectPanel'
+import { useModelLibrary } from './features/assets/useModelLibrary'
 import CalibrationWizard from './features/calibration/CalibrationWizard'
-import CameraPanel from './features/camera/CameraPanel'
+import CameraWindow from './features/camera/CameraWindow'
 import { useCamera } from './features/camera/useCamera'
-import ObjectControls from './features/controls/ObjectControls'
-import GestureGuidePanel from './features/gestures/GestureGuidePanel'
 import { useGestureEngine } from './features/gestures/useGestureEngine'
 import { useHandTracking } from './features/hand-tracking/useHandTracking'
+import GuidePanel from './features/hud/GuidePanel'
+import HudMenu from './features/hud/HudMenu'
+import HudStatus from './features/hud/HudStatus'
+import UndoToast from './features/hud/UndoToast'
+import HandPointer from './features/interaction/HandPointer'
 import {
   createInitialSceneHistory,
   sceneHistoryReducer,
@@ -27,20 +32,30 @@ function App() {
   const [calibrationOpen, setCalibrationOpen] = useState(
     () => localStorage.getItem('holographic-calibration') !== 'complete',
   )
+  const closeCalibration = useCallback(() => setCalibrationOpen(false), [])
   const camera = useCamera()
   const handTracking = useHandTracking(camera.videoRef, camera.status)
   const gestures = useGestureEngine(handTracking)
+  const library = useModelLibrary()
   const [sceneHistory, dispatch] = useReducer(
     sceneHistoryReducer,
     loadSceneState(),
     createInitialSceneHistory,
   )
   const scene = sceneHistory.present
+  const [undoMessage, setUndoMessage] = useState<string | null>(null)
+  const dismissUndo = useCallback(() => setUndoMessage(null), [])
 
   const selectedObject = useMemo(
     () => scene.objects.find((object) => object.id === scene.selectedId) ?? null,
     [scene.objects, scene.selectedId],
   )
+
+  const deleteSelected = useCallback(() => {
+    if (!selectedObject) return
+    dispatch({ type: 'remove-object', id: selectedObject.id })
+    setUndoMessage(`Đã xóa “${selectedObject.name}”`)
+  }, [selectedObject])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => saveSceneState(scene), 250)
@@ -48,6 +63,8 @@ function App() {
   }, [scene])
 
   useEffect(() => {
+    if (calibrationOpen) return
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.ctrlKey && event.key.toLowerCase() === 'z') {
         event.preventDefault()
@@ -73,10 +90,11 @@ function App() {
         e: () => dispatch({ type: 'rotate', axis: 1, delta: 0.15 }),
         '-': () => dispatch({ type: 'scale', delta: -0.1 }),
         '=': () => dispatch({ type: 'scale', delta: 0.1 }),
+        Delete: deleteSelected,
       }
 
       const action = keyActions[event.key]
-      if (action && scene.selectedId) {
+      if (action && selectedObject) {
         event.preventDefault()
         action()
       }
@@ -84,66 +102,54 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [scene.selectedId])
+  }, [calibrationOpen, deleteSelected, selectedObject])
 
   return (
-    <main className="studio-shell">
-      <header className="studio-header">
-        <div>
-          <p className="eyebrow">Không gian thử nghiệm</p>
-          <h1>Holographic Studio</h1>
-        </div>
-        <div className="header-actions">
-          <button
-            className="recalibrate-button"
-            type="button"
-            onClick={() => setCalibrationOpen(true)}
-          >
-            Hiệu chuẩn lại
-          </button>
-          <div className="system-status" role="status">
-            <span className="status-dot" aria-hidden="true" />
-            3D engine sẵn sàng
+    <main className="studio">
+      <Suspense
+        fallback={
+          <div className="scene-loading" role="status">
+            Đang khởi tạo không gian 3D…
           </div>
-        </div>
-      </header>
+        }
+      >
+        <SceneViewport scene={scene} dispatch={dispatch} gestures={gestures} />
+      </Suspense>
 
-      <section className="workspace" aria-label="Không gian thiết kế 3D">
-        <Suspense
-          fallback={
-            <div className="scene-loading" role="status">
-              Đang khởi tạo không gian 3D…
-            </div>
+      <div className="hud">
+        <HudStatus
+          gestures={gestures}
+          trackingStatus={handTracking.status}
+          selectedName={selectedObject?.name ?? null}
+        />
+        <CameraWindow camera={camera} handTracking={handTracking} />
+        <HudMenu
+          selectedName={selectedObject?.name ?? null}
+          onDelete={deleteSelected}
+          addPanel={
+            <AddObjectPanel
+              dispatch={dispatch}
+              history={sceneHistory}
+              library={library}
+            />
           }
-        >
-          <SceneViewport scene={scene} dispatch={dispatch} gestures={gestures} />
-        </Suspense>
-        <aside className="side-rail" aria-label="Bảng điều khiển">
-          <CameraPanel
-            camera={camera}
-            handTracking={handTracking}
+          guidePanel={
+            <GuidePanel
+              gestures={gestures}
+              onRecalibrate={() => setCalibrationOpen(true)}
+            />
+          }
+        />
+        {undoMessage && (
+          <UndoToast
+            message={undoMessage}
+            onUndo={() => dispatch({ type: 'undo' })}
+            onDismiss={dismissUndo}
           />
-          <GestureGuidePanel
-            gestures={gestures}
-            trackingStatus={handTracking.status}
-          />
-          <ModelUploadPanel dispatch={dispatch} />
-          <ObjectControls
-            selectedObject={selectedObject}
-            dispatch={dispatch}
-            canUndo={sceneHistory.past.length > 0}
-            canRedo={sceneHistory.future.length > 0}
-          />
-        </aside>
-      </section>
+        )}
+      </div>
 
-      <footer className="shortcut-bar">
-        <span>Chọn vật thể bằng chuột</span>
-        <span>Di chuyển: phím mũi tên</span>
-        <span>Xoay: Q / E</span>
-        <span>Thu phóng: − / +</span>
-        <span>Hoàn tác: Ctrl + Z</span>
-      </footer>
+      <HandPointer gestures={gestures} />
 
       {calibrationOpen && (
         <CalibrationWizard
@@ -155,6 +161,7 @@ function App() {
             localStorage.setItem('holographic-calibration', 'complete')
             setCalibrationOpen(false)
           }}
+          onSkip={closeCalibration}
         />
       )}
     </main>
@@ -162,4 +169,3 @@ function App() {
 }
 
 export default App
-

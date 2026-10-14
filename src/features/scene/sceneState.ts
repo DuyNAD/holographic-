@@ -20,6 +20,7 @@ export interface SceneState {
 
 export type SceneAction =
   | { type: 'add-object'; object: SceneObjectModel }
+  | { type: 'remove-object'; id?: string }
   | { type: 'select'; id: string | null }
   | { type: 'translate'; axis: 0 | 1 | 2; delta: number }
   | { type: 'rotate'; axis: 0 | 1 | 2; delta: number }
@@ -58,6 +59,58 @@ const createObjects = (): SceneObjectModel[] => [
     scale: 1,
   },
 ]
+
+export type ShapeKind = Exclude<SceneObjectKind, 'model'>
+
+export const SHAPE_PRESETS: Record<ShapeKind, { name: string; color: string }> = {
+  box: { name: 'Khối lập phương', color: '#43c7ff' },
+  sphere: { name: 'Khối cầu', color: '#7d67ff' },
+  cylinder: { name: 'Khối trụ', color: '#43e0aa' },
+}
+
+const SPAWN_SPACING = 2.2
+const SPAWN_CLEARANCE = 1.5
+
+// New objects appear at the first free slot near the centre of the view, so
+// they never land inside an object that is already there.
+export function findSpawnPosition(objects: SceneObjectModel[]): Vector3Tuple {
+  const rows = [0, 1.9, 3.8]
+  const columnGroups = [
+    [0, -1, 1],
+    [-2, 2],
+  ]
+
+  for (const columns of columnGroups) {
+    for (const y of rows) {
+      for (const column of columns) {
+        const candidate: Vector3Tuple = [column * SPAWN_SPACING, y, 0]
+        const free = objects.every(
+          ({ position }) =>
+            Math.hypot(
+              position[0] - candidate[0],
+              position[1] - candidate[1],
+              position[2] - candidate[2],
+            ) >= SPAWN_CLEARANCE,
+        )
+        if (free) return candidate
+      }
+    }
+  }
+
+  return [0, 0, 0]
+}
+
+export const createShapeObject = (
+  kind: ShapeKind,
+  position: Vector3Tuple = [0, 0, 0],
+): SceneObjectModel => ({
+  id: `${kind}-${crypto.randomUUID()}`,
+  ...SHAPE_PRESETS[kind],
+  kind,
+  position,
+  rotation: [0, 0, 0],
+  scale: 1,
+})
 
 export const createInitialSceneState = (): SceneState => ({
   objects: createObjects(),
@@ -98,6 +151,14 @@ export function sceneReducer(state: SceneState, action: SceneAction): SceneState
         objects: [...state.objects, action.object],
         selectedId: action.object.id,
       }
+    case 'remove-object': {
+      const id = action.id ?? state.selectedId
+      if (!id || !state.objects.some((object) => object.id === id)) return state
+      return {
+        objects: state.objects.filter((object) => object.id !== id),
+        selectedId: state.selectedId === id ? null : state.selectedId,
+      }
+    }
     case 'select':
       return { ...state, selectedId: action.id }
     case 'translate':

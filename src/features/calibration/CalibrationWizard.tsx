@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { CameraStatus } from '../camera/useCamera'
 import type { StableGesture } from '../gestures/gestureTypes'
 import type { HandTrackingStatus } from '../hand-tracking/handTrackingTypes'
@@ -9,6 +9,7 @@ interface CalibrationWizardProps {
   gestures: StableGesture[]
   onStartCamera: () => void
   onComplete: () => void
+  onSkip: () => void
 }
 
 const steps = ['Giới thiệu', 'Camera', 'Bàn tay', 'Cử chỉ', 'Sẵn sàng']
@@ -19,11 +20,21 @@ export default function CalibrationWizard({
   gestures,
   onStartCamera,
   onComplete,
+  onSkip,
 }: CalibrationWizardProps) {
   const [step, setStep] = useState(0)
   const cameraReady = cameraStatus === 'active'
   const handReady = trackingStatus === 'tracking'
   const pinchReady = gestures.some(({ name }) => name === 'pinch')
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onSkip()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onSkip])
 
   return (
     <div className="calibration-backdrop" role="presentation">
@@ -51,7 +62,7 @@ export default function CalibrationWizard({
               Quá trình hiệu chuẩn sẽ kiểm tra camera, vị trí bàn tay và cử chỉ
               chụm. Video chỉ được xử lý trên thiết bị của bạn.
             </p>
-            <button type="button" onClick={() => setStep(1)}>
+            <button type="button" data-gesture-target onClick={() => setStep(1)}>
               Bắt đầu hiệu chuẩn
             </button>
           </div>
@@ -79,7 +90,7 @@ export default function CalibrationWizard({
               </button>
             )}
             {cameraReady && (
-              <button type="button" onClick={() => setStep(2)}>
+              <button type="button" data-gesture-target onClick={() => setStep(2)}>
                 Tiếp tục
               </button>
             )}
@@ -98,7 +109,7 @@ export default function CalibrationWizard({
               <span aria-hidden="true">✦</span>
               <strong>{handReady ? 'Đã nhận diện bàn tay' : 'Đang tìm bàn tay…'}</strong>
             </div>
-            <button type="button" disabled={!handReady} onClick={() => setStep(3)}>
+            <button type="button" data-gesture-target disabled={!handReady} onClick={() => setStep(3)}>
               {handReady ? 'Tay đã ở đúng vị trí' : 'Đưa tay vào camera'}
             </button>
           </div>
@@ -116,7 +127,7 @@ export default function CalibrationWizard({
               <span aria-hidden="true">◇</span>
               <strong>{pinchReady ? 'Chụm thành công' : 'Đang chờ cử chỉ chụm…'}</strong>
             </div>
-            <button type="button" disabled={!pinchReady} onClick={() => setStep(4)}>
+            <button type="button" data-gesture-target disabled={!pinchReady} onClick={() => setStep(4)}>
               {pinchReady ? 'Hoàn tất hiệu chuẩn' : 'Hãy thử chụm hai ngón'}
             </button>
           </div>
@@ -128,13 +139,25 @@ export default function CalibrationWizard({
             <p className="eyebrow">Hiệu chuẩn hoàn tất</p>
             <h2 id="calibration-title">Bạn đã sẵn sàng</h2>
             <p>
-              Bảng cử chỉ bên phải sẽ hướng dẫn và phản hồi thao tác theo thời
-              gian thực.
+              Trỏ ngón tay vào một nút và giữ yên 1 giây để bấm. Mở{' '}
+              <strong>Hướng dẫn</strong> trong menu bên trái bất cứ lúc nào để
+              xem lại các cử chỉ.
             </p>
-            <button type="button" onClick={onComplete}>
+            <button type="button" data-gesture-target onClick={onComplete}>
               Vào không gian thiết kế
             </button>
           </div>
+        )}
+
+        {step < 4 && (
+          <button
+            className="calibration-skip"
+            type="button"
+            data-gesture-target
+            onClick={onSkip}
+          >
+            Bỏ qua, dùng chuột và bàn phím
+          </button>
         )}
       </section>
     </div>

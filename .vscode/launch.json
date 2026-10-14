@@ -1,0 +1,24 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Holographic Studio (desktop)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/desktop/run.py",
+      "cwd": "${workspaceFolder}/desktop",
+      "python": "${workspaceFolder}/desktop/.venv/Scripts/python.exe",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Holographic Studio tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "cwd": "${workspaceFolder}/desktop",
+      "python": "${workspaceFolder}/desktop/.venv/Scripts/python.exe",
+      "console": "integratedTerminal"
+    }
+  ]
+}
