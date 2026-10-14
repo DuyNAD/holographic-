@@ -69,6 +69,8 @@ class HudContext:
     camera_active: bool = False
     camera_running: bool = False  # open, even if it only sends black frames
     camera_busy: bool = False
+    designer_status: str = "unset"  # unset, enrolling, locked, absent, unavailable
+    designer_message: str = "Chưa chọn người thiết kế"
     tracking_message: str = "Video chỉ xử lý trên thiết bị."
     library: tuple[LibraryEntry, ...] = ()
     library_page: int = 0
@@ -121,6 +123,8 @@ def build_hud(ctx: HudContext) -> tuple[Widget, ...]:
     _menu(b, ctx, u, narrow)
     if ctx.toast:
         _toast(b, ctx, u, narrow)
+    if ctx.designer_status == "pending" and not ctx.calibration:
+        _designer_confirm(b, ctx, u)
     if ctx.calibration:
         _calibration(b, ctx, u)
     return tuple(b.widgets)
@@ -156,8 +160,9 @@ def _camera(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
     width = (12 if narrow else 19) * u
     video_h = width * 9 / 16
     header, footer = 2.6 * u, 3.2 * u
+    designer_row = 2.2 * u
     x = ctx.width - u - width
-    total = header + video_h + footer
+    total = header + designer_row + video_h + footer
     y = ctx.height - u - total if narrow else u
 
     b.add("camera.window", "glass", Rect(x, y, width, total))
@@ -169,9 +174,19 @@ def _camera(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
         ctx.camera_badge,
         size=0.75,
     )
+    locked = ctx.designer_status == "locked"
+    b.add(
+        "camera.designer",
+        "label" if locked else "muted",
+        Rect(x + 0.8 * u, y + header, width - 1.6 * u, designer_row),
+        ("● " if locked else "○ ") + ctx.designer_message,
+        size=0.72,
+        pressed=locked,
+    )
+    video_y = y + header + designer_row
     video_text = "" if ctx.camera_active else ctx.camera_message
-    b.add("camera.video", "camera", Rect(x, y + header, width, video_h), video_text)
-    footer_y = y + header + video_h
+    b.add("camera.video", "camera", Rect(x, video_y, width, video_h), video_text)
+    footer_y = video_y + video_h
     if not narrow:
         b.add(
             "camera.status",
@@ -205,6 +220,13 @@ def _menu(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
             ("menu.add", "+\nThêm", "button", True, ctx.panel == "add"),
             ("menu.delete", "×\nXóa", "danger", ctx.selected_name is not None, False),
             ("menu.guide", "?\nHướng dẫn", "button", True, ctx.panel == "guide"),
+            (
+                "menu.designer",
+                "●\nNgười TK",
+                "button",
+                True,
+                ctx.designer_status in ("locked", "enrolling"),
+            ),
         ]
 
     count = len(buttons)
@@ -230,14 +252,15 @@ def _menu(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
 
     width = min(21 * u, ctx.width - 2 * u)
     if narrow:
-        max_h = ctx.height - dock.h - 3 * u - 12 * u
+        # The panel grows upward from the dock and must stay below the status bar.
+        max_h = ctx.height - dock.h - 3 * u - 4.6 * u
         panel = Rect(u, dock.y - u, width, 0)  # height fixed below; grows upward
     else:
         max_h = ctx.height - 6 * u
         panel = Rect(dock.x + dock.w + 0.75 * u, dock.y, width, 0)
 
     content: list[tuple] = []
-    height = _panel_content(content, ctx, u, width)
+    height = _panel_content(content, ctx, u, width, narrow)
     height = min(height, max_h)
     if narrow:
         panel = Rect(panel.x, panel.y - height, width, height)
@@ -251,7 +274,9 @@ def _menu(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
         b.add(widget_id, kind, Rect(panel.x + rx, panel.y + ry, rw, rh), text, **extra)
 
 
-def _panel_content(content: list, ctx: HudContext, u: float, width: float) -> float:
+def _panel_content(
+    content: list, ctx: HudContext, u: float, width: float, narrow: bool = False
+) -> float:
     """Appends (id, kind, relative rect, text, extra) and returns the content height."""
     pad = 0.9 * u
     inner = width - 2 * pad
@@ -360,6 +385,19 @@ def _panel_content(content: list, ctx: HudContext, u: float, width: float) -> fl
     else:
         section("Cử chỉ tay")
         for name, instruction, action in ctx.guide_rows:
+            if narrow:
+                # Small windows: one compact line per gesture.
+                content.append(
+                    (
+                        f"guide.{name}.name",
+                        "label",
+                        (pad, y, inner, 2 * u),
+                        f"{name} · {action}",
+                        {"size": 0.72},
+                    )
+                )
+                y += 2.2 * u
+                continue
             content.append((f"guide.{name}", "glass", (pad, y, inner, 3.4 * u), "", {}))
             content.append(
                 (
@@ -380,24 +418,73 @@ def _panel_content(content: list, ctx: HudContext, u: float, width: float) -> fl
                 )
             )
             y += 3.8 * u
-        section("Chuột và bàn phím")
-        for action, keys in SHORTCUTS:
-            content.append(
-                (
-                    f"shortcut.{action}",
-                    "muted",
-                    (pad, y, inner, 1.6 * u),
-                    f"{action}:  {keys}",
-                    {"size": 0.72},
+        # Small windows keep the gestures and the button; the shortcuts are in the README.
+        if not narrow:
+            section("Chuột và bàn phím")
+            for action, keys in SHORTCUTS:
+                content.append(
+                    (
+                        f"shortcut.{action}",
+                        "muted",
+                        (pad, y, inner, 1.6 * u),
+                        f"{action}:  {keys}",
+                        {"size": 0.72},
+                    )
                 )
-            )
-            y += 1.7 * u
+                y += 1.7 * u
         y += 0.4 * u
         content.append(
             ("guide.recalibrate", "button", (pad, y, inner, 2.8 * u), "Hiệu chuẩn lại", {})
         )
         y += 3.2 * u
     return y + 0.4 * u
+
+
+def _designer_confirm(b: _Builder, ctx: HudContext, u: float) -> None:
+    """Asks the user to confirm the recorded person before hand control is locked.
+
+    No backdrop: the camera window (with the amber box around the recorded face)
+    must stay visible so the user can see who would be locked.
+    """
+    width = min(26 * u, ctx.width - 2 * u)
+    height = 13 * u
+    x = (ctx.width - width) / 2
+    y = max(5 * u, (ctx.height - height) / 2 - 4 * u)
+    b.add("designer.dialog", "glass", Rect(x, y, width, height))
+    b.add(
+        "designer.title",
+        "title",
+        Rect(x, y + 0.8 * u, width, 2.6 * u),
+        "Khóa người thiết kế?",
+        size=1.2,
+        align="center",
+    )
+    b.add(
+        "designer.body",
+        "label",  # brighter than muted: it sits over the 3D scene
+        Rect(x + 1.5 * u, y + 3.6 * u, width - 3 * u, 3.6 * u),
+        "Người trong khung vàng ở ô camera sẽ là người duy nhất điều khiển bằng tay.",
+        size=0.75,
+        align="center",
+    )
+    gap = 0.5 * u
+    button_w = (width - 3 * u - 2 * gap) / 3
+    by = y + height - 4 * u
+    for index, (action, kind, label) in enumerate(
+        (
+            ("confirm", "button", "Xác nhận"),
+            ("retry", "tile", "Chọn lại"),
+            ("cancel", "tile", "Hủy"),
+        )
+    ):
+        b.add(
+            f"designer.{action}",
+            kind,
+            Rect(x + 1.5 * u + index * (button_w + gap), by, button_w, 2.8 * u),
+            label,
+            size=0.85,
+            pressed=action == "confirm",
+        )
 
 
 def _toast(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:

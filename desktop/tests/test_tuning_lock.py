@@ -1,6 +1,9 @@
-"""Tuning lock (v1, approved by the user).
+"""Tuning lock (v2, approved by the user).
 
-These are the hand-tracking and interaction settings the user tested and approved.
+v1: hand tracking, gestures, fist + swipe rotation, camera, scene, HUD behaviour.
+v2: adds the designer feature (face, body, confirmation) and the HUD layout breakpoint.
+
+These are the settings the user tested and approved.
 This test fails on purpose if any of them changes, so a tweak can never slip in
 unnoticed. To change one deliberately, update the value here in the same change
 and say so in the commit message.
@@ -14,6 +17,8 @@ from holostudio import config
 from holostudio.app import controller
 from holostudio.camera import capture
 from holostudio.gestures import classifier, engine, filters, state_machine
+from holostudio.hud import widgets
+from holostudio.identity import bodies, designer, faces
 from holostudio.interaction import dwell, manipulator
 from holostudio.rendering import scene_view
 from holostudio.scene import state
@@ -62,6 +67,21 @@ LOCKED = {
     (config, "UNDO_TOAST_SECONDS"): 6.0,
     (controller, "SAVE_DELAY_SECONDS"): 0.25,
     (controller, "LIBRARY_PAGE_SIZE"): 4,
+    (widgets, "NARROW_WIDTH"): 760,
+    # Designer: face detection and recognition (v2)
+    (faces, "DETECTION_SCORE"): 0.8,
+    (faces, "SAME_PERSON_SIMILARITY"): 0.363,
+    # Designer: bodies and which hands belong to whom (v2)
+    (bodies, "MAX_PEOPLE"): 4,
+    (bodies, "POSE_CONFIDENCE"): 0.5,
+    (bodies, "HAND_TO_WRIST"): 0.12,
+    # Designer: recording, confirming, and following (v2)
+    (designer, "ENROLL_SAMPLES"): 5,
+    (designer, "ENROLL_TIMEOUT_SECONDS"): 4.0,
+    (designer, "VERIFY_INTERVAL_SECONDS"): 0.3,
+    (designer, "TRACK_DISTANCE"): 0.15,
+    (designer, "ABSENT_SECONDS"): 0.7,
+    (designer, "CONFIRM_TIMEOUT_SECONDS"): 20.0,
 }
 
 

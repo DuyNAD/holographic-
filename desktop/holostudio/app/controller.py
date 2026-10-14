@@ -45,6 +45,11 @@ GUIDE_ROWS = (
     ("Chụm", "Chụm ngón cái và ngón trỏ", "Chọn và kéo"),
     ("Nắm + phẩy", "Một tay nắm giữ vật, tay kia mở và phẩy", "Xoay 3D"),
     ("Mở tay", "Mở bàn tay đang nắm hoặc chụm", "Thả vật thể"),
+    (
+        "Người thiết kế",
+        "Người gần camera nhất bấm nút, rồi Xác nhận",
+        "Chỉ tay người đó điều khiển",
+    ),
     ("Hai tay chụm", "Chụm ngón trên hai tay", "Đổi kích thước"),
 )
 
@@ -76,6 +81,9 @@ class StudioController:
         calibrated: bool,
         pick_file: Callable[[], Path | None],
         on_camera_start: Callable[[], None] = lambda: None,
+        on_designer_request: Callable[[], None] = lambda: None,
+        on_designer_confirm: Callable[[], None] = lambda: None,
+        on_designer_cancel: Callable[[], None] = lambda: None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.library = library
@@ -84,6 +92,10 @@ class StudioController:
         self._settings_file = settings_file
         self._pick_file = pick_file
         self._on_camera_start = on_camera_start
+        self._on_designer_request = on_designer_request
+        self._on_designer_confirm = on_designer_confirm
+        self._on_designer_cancel = on_designer_cancel
+        self.designer_status = "unset"
         self._clock = clock
 
         self.history = create_history(load_scene(scene_file))
@@ -130,6 +142,7 @@ class StudioController:
             hand_tracked=tracking.status == "tracking",
             pinch_seen=any(g.name == "pinch" for g in gestures),
         )
+        self.designer_status = tracking.designer.status
 
     def press(self, widget_id: str) -> None:
         """Handles a HUD button, whether it was clicked or pressed by hand."""
@@ -175,6 +188,12 @@ class StudioController:
         elif widget_id == "toast.undo":
             self.dispatch(Undo())
             self.toast = None
+        elif widget_id in ("menu.designer", "designer.retry"):
+            self.choose_designer()
+        elif widget_id == "designer.confirm" and self.designer_status == "pending":
+            self._on_designer_confirm()
+        elif widget_id == "designer.cancel":
+            self._on_designer_cancel()
         elif widget_id == "camera.toggle":
             self.toggle_camera()
 
@@ -182,8 +201,14 @@ class StudioController:
         if name == "escape":
             if self.calibration.open:
                 self._press_calibration("skip")
+            elif self.designer_status in ("pending", "enrolling"):
+                self._on_designer_cancel()
             else:
                 self.panel = None
+            return
+        if name == "enter":
+            if self.designer_status == "pending" and not self.calibration.open:
+                self._on_designer_confirm()
             return
         if self.calibration.open:
             return
@@ -254,6 +279,26 @@ class StudioController:
         self._saved_objects = self.scene.objects
         self._dirty_since = None
 
+    def choose_designer(self) -> None:
+        """Record the person nearest the camera as the designer (camera starts if needed)."""
+        if not self.camera_running:
+            self.camera.start()
+            self._on_camera_start()
+        self._on_designer_request()
+
+    def hand_may_press(self, widget_id: str, designer_status: str) -> bool:
+        """Hands control the HUD only once a designer is locked; before that they can
+        only reach the designer button (and the calibration steps). While a recorded
+        person waits for confirmation, only the confirmation buttons respond (and the
+        app only passes on that person's hands)."""
+        if self.calibration.open:
+            return widget_id.startswith("calibration.")
+        if designer_status == "pending":
+            return widget_id.startswith("designer.")
+        if designer_status == "locked":
+            return True
+        return widget_id in ("menu.designer", "menu.toggle")
+
     def hud_context(
         self,
         width: int,
@@ -265,6 +310,10 @@ class StudioController:
         if any(g.name == "fist" for g in gestures) and self.scene.selected is None:
             # The fist found no object under it: say why nothing turns.
             gesture_label = "Nắm · chưa chọn vật"
+        elif primary and tracking.designer.pending and not self.calibration.open:
+            gesture_label = "Chờ xác nhận người TK"
+        elif primary and not tracking.designer.locked and not self.calibration.open:
+            gesture_label = "Chưa chọn người TK"
         elif primary:
             gesture_label = GESTURE_LABELS[primary.name]
         elif tracking.status == "tracking":
@@ -304,4 +353,8 @@ class StudioController:
                 self.calibration.view(self._calibration_inputs) if self.calibration.open else None
             ),
             guide_rows=GUIDE_ROWS,
+            designer_status=tracking.designer.status if camera_active else "unset",
+            designer_message=tracking.designer.message
+            if camera_active
+            else "Bật camera để chọn người TK",
         )

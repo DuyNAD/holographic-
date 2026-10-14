@@ -5,17 +5,32 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Protocol
 
 from holostudio.camera.capture import CameraStream, Frame
 from holostudio.config import MAX_TRACKED_HANDS
 
-from .types import HandFrame, TrackingState
+from .types import DesignerInfo, HandFrame, TrackingState
 
 
 class Detector(Protocol):
     def detect(self, image, timestamp: float) -> HandFrame: ...
     def close(self) -> None: ...
+
+
+class Identity(Protocol):
+    def request_enrollment(self, now: float) -> None: ...
+    def confirm(self) -> None: ...
+    def cancel(self) -> None: ...
+    def process(self, image, timestamp: float, hands) -> tuple[tuple[bool, ...], DesignerInfo]: ...
+    def close(self) -> None: ...
+
+
+def _default_identity() -> Identity:
+    from holostudio.identity.pipeline import default_identity_pipeline
+
+    return default_identity_pipeline()
 
 
 def _default_detector() -> Detector:
@@ -34,9 +49,13 @@ class TrackingWorker:
         self,
         camera: CameraStream,
         detector_factory: Callable[[], Detector] = _default_detector,
+        identity_factory: Callable[[], Identity] = _default_identity,
     ) -> None:
         self._camera = camera
         self._factory = detector_factory
+        self._identity_factory = identity_factory
+        self._designer_requested = threading.Event()
+        self._identity: Identity | None = None
         self._lock = threading.Lock()
         self._state = IDLE
         self._stop = threading.Event()
@@ -53,6 +72,20 @@ class TrackingWorker:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="tracking", daemon=True)
         self._thread.start()
+
+    def request_designer(self) -> None:
+        """Record the person nearest the camera as the designer (on the next frame)."""
+        self._designer_requested.set()
+
+    def confirm_designer(self) -> None:
+        """The user accepts the recorded person as the designer."""
+        if self._identity is not None:
+            self._identity.confirm()
+
+    def cancel_designer(self) -> None:
+        """The user rejects the recorded person; the previous designer stays."""
+        if self._identity is not None:
+            self._identity.cancel()
 
     def stop(self) -> None:
         self._stop.set()
@@ -72,6 +105,13 @@ class TrackingWorker:
         except Exception:
             self._set(TrackingState("error", "Không thể tải mô hình nhận diện tay."))
             return
+        try:
+            identity: Identity | None = self._identity_factory()
+            self._identity = identity
+            designer = DesignerInfo()
+        except Exception:
+            identity = None
+            designer = DesignerInfo("unavailable", "Lỗi mô hình nhận diện người")
 
         last_index = -1
         try:
@@ -86,9 +126,22 @@ class TrackingWorker:
 
                 try:
                     hand_frame = detector.detect(frame.image, frame.timestamp)
+                    mine = tuple(False for _ in hand_frame.hands)
+                    if identity is not None:
+                        if self._designer_requested.is_set():
+                            self._designer_requested.clear()
+                            identity.request_enrollment(frame.timestamp)
+                        mine, designer = identity.process(
+                            frame.image, frame.timestamp, hand_frame.hands
+                        )
+                    hand_frame = replace(hand_frame, designer_hands=mine)
                 except Exception:
                     # One bad frame must not stop tracking: report it and keep going.
-                    self._set(TrackingState("error", "Không thể xử lý khung hình camera."))
+                    self._set(
+                        TrackingState(
+                            "error", "Không thể xử lý khung hình camera.", designer=designer
+                        )
+                    )
                     continue
 
                 count = len(hand_frame.hands)
@@ -99,7 +152,11 @@ class TrackingWorker:
                         if count
                         else NO_HAND_MESSAGE,
                         hand_frame,
+                        designer,
                     )
                 )
         finally:
             detector.close()
+            if identity is not None:
+                self._identity = None
+                identity.close()

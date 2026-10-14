@@ -43,6 +43,7 @@ KEY_EVENTS = (
     "control-z",
     "control-y",
     "control-shift-z",
+    "enter",
 )
 
 
@@ -87,6 +88,9 @@ class StudioApp(ShowBase):
             calibrated=load_calibrated(data_dir / "settings.json"),
             pick_file=pick_file,
             on_camera_start=self.tracking.start,
+            on_designer_request=self.tracking.request_designer,
+            on_designer_confirm=self.tracking.confirm_designer,
+            on_designer_cancel=self.tracking.cancel_designer,
             clock=clock,
         )
 
@@ -106,6 +110,8 @@ class StudioApp(ShowBase):
             clock=clock,
         )
         self._last_preview_index = -1
+        self._designer_locked = False
+        self._designer_status = "unset"
 
         self.accept("mouse1", self._on_click)
         self.accept("window-event", self._on_window_event)
@@ -135,7 +141,12 @@ class StudioApp(ShowBase):
         return (point[0] * width, point[1] * height)
 
     def _pointer_target(self, point) -> str | None:
-        return press_target(self.widgets, self._to_pixels(point))
+        """The button the hand pointer may press here (hands are limited until a
+        designer is locked; the mouse is never limited)."""
+        target = press_target(self.widgets, self._to_pixels(point))
+        if target and self.controller.hand_may_press(target, self._designer_status):
+            return target
+        return None
 
     def _over_hud(self, point) -> bool:
         return over_hud(self.widgets, self._to_pixels(point))
@@ -147,7 +158,7 @@ class StudioApp(ShowBase):
             return
         mouse = self.mouseWatcherNode.getMouse()
         point = ((mouse.x + 1) / 2, (1 - mouse.y) / 2)
-        target = self._pointer_target(point)
+        target = press_target(self.widgets, self._to_pixels(point))
         if target:
             self.controller.press(target)
         elif not self._over_hud(point):
@@ -166,7 +177,14 @@ class StudioApp(ShowBase):
         """One frame of the whole pipeline (also used by tests and tools)."""
         controller = self.controller
         tracking = self.tracking.state
-        gestures = self.gestures.update(tracking)
+        self._designer_locked = tracking.designer.locked
+        self._designer_status = tracking.designer.status
+        # Only the designer's hands control the app once a designer is locked, and only
+        # the recorded person's hands can confirm them. Before that, hands may still
+        # drive calibration and press the designer button.
+        mine_only = self._designer_locked or tracking.designer.pending
+        controlling = tracking.designer_only() if mine_only else tracking
+        gestures = self.gestures.update(controlling)
         controller.update_inputs(tracking, gestures)
 
         width, height = self._size()
@@ -176,7 +194,7 @@ class StudioApp(ShowBase):
         if pointer_frame.pressed:
             controller.press(pointer_frame.pressed)
 
-        if controller.calibration.open:
+        if controller.calibration.open or not self._designer_locked:
             self.manipulator.reset()
         else:
             self.manipulator.update(gestures, controller.scene)
@@ -199,7 +217,17 @@ class StudioApp(ShowBase):
             return
         self._last_preview_index = frame.index
         hands = tracking.frame.hands if tracking.status == "tracking" else ()
-        self.hud.update_camera(prepare_preview(frame.image, hands, self.hud.camera_aspect))
+        designer = tracking.designer
+        self.hud.update_camera(
+            prepare_preview(
+                frame.image,
+                hands,
+                self.hud.camera_aspect,
+                designer_face=designer.face,
+                other_faces=designer.other_faces,
+                candidate=designer.pending,
+            )
+        )
 
     def _frame(self, task):
         self.step()

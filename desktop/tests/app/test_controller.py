@@ -202,9 +202,113 @@ def test_hud_explains_a_fist_with_nothing_selected(make):
 
     controller, _ = make()
     fist = StableGesture(0, "Right", "fist", 1.0, (Landmark(0.5, 0.5, 0),) * 21, 1)
-    tracking = TrackingState("tracking")
+    from holostudio.tracking.types import DesignerInfo
+
+    tracking = TrackingState("tracking", designer=DesignerInfo("locked", "Đã khóa"))
     assert controller.hud_context(1280, 720, tracking, (fist,)).gesture_label == (
         "Nắm · chưa chọn vật"
     )
     controller.click_scene("box-1")
     assert controller.hud_context(1280, 720, tracking, (fist,)).gesture_label == "Nắm tay"
+
+
+def test_hands_are_locked_until_a_designer_is_chosen(make):
+    from holostudio.gestures.engine import StableGesture
+    from holostudio.tracking.types import DesignerInfo, Landmark
+
+    controller, _ = make()
+    point = StableGesture(0, "Right", "point", 1.0, (Landmark(0.5, 0.5, 0),) * 21, 1)
+    unset = TrackingState("tracking")
+    assert controller.hud_context(1280, 720, unset, (point,)).gesture_label == (
+        "Chưa chọn người TK"
+    )
+    # Before a designer is locked, a hand can only reach the designer button.
+    assert controller.hand_may_press("menu.designer", "unset")
+    assert controller.hand_may_press("menu.toggle", "unset")
+    assert not controller.hand_may_press("menu.add", "unset")
+    assert controller.hand_may_press("menu.add", "locked")
+    # Waiting for confirmation: only the confirmation buttons respond to hands.
+    assert controller.hand_may_press("designer.confirm", "pending")
+    assert not controller.hand_may_press("menu.add", "pending")
+
+    locked = TrackingState("tracking", designer=DesignerInfo("locked", "Đã khóa"))
+    assert controller.hud_context(1280, 720, locked, (point,)).gesture_label == "Trỏ"
+
+
+def test_calibration_buttons_stay_reachable_by_hand(make):
+    controller, _ = make(calibrated=False)
+    assert controller.hand_may_press("calibration.skip", "unset")
+    assert not controller.hand_may_press("menu.designer", "unset")
+
+
+def test_choosing_a_designer_starts_the_camera_and_asks_tracking(tmp_path, glb_file):
+    requests = []
+    camera = FakeCamera()
+    controller = StudioController(
+        library=ModelLibrary(tmp_path / "library", parse=lambda _p: None),
+        camera=camera,
+        scene_file=tmp_path / "scene.json",
+        settings_file=tmp_path / "settings.json",
+        calibrated=True,
+        pick_file=lambda: None,
+        on_designer_request=lambda: requests.append(True),
+    )
+    controller.press("menu.designer")
+    assert camera.active
+    assert requests == [True]
+    # Mouse and keyboard keep working without a designer.
+    controller.click_scene("box-1")
+    controller.key("delete")
+    assert controller.scene.find("box-1") is None
+
+
+def make_with_designer_hooks(tmp_path):
+    calls = []
+    controller = StudioController(
+        library=ModelLibrary(tmp_path / "library", parse=lambda _p: None),
+        camera=FakeCamera(),
+        scene_file=tmp_path / "scene.json",
+        settings_file=tmp_path / "settings.json",
+        calibrated=True,
+        pick_file=lambda: None,
+        on_designer_request=lambda: calls.append("request"),
+        on_designer_confirm=lambda: calls.append("confirm"),
+        on_designer_cancel=lambda: calls.append("cancel"),
+    )
+    return controller, calls
+
+
+def pending_tracking():
+    from holostudio.tracking.types import DesignerInfo
+
+    return TrackingState("tracking", designer=DesignerInfo("pending", "Chờ xác nhận"))
+
+
+def test_a_recorded_designer_is_confirmed_retried_or_cancelled(tmp_path):
+    controller, calls = make_with_designer_hooks(tmp_path)
+    controller.camera.start()  # a person can only be recorded while the camera runs
+    controller.update_inputs(pending_tracking(), ())
+
+    context = controller.hud_context(1280, 720, pending_tracking(), ())
+    assert context.designer_status == "pending"
+
+    controller.press("designer.confirm")
+    controller.press("designer.retry")
+    controller.press("designer.cancel")
+    assert calls == ["confirm", "request", "cancel"]
+
+
+def test_enter_confirms_and_escape_cancels_a_recorded_designer(tmp_path):
+    controller, calls = make_with_designer_hooks(tmp_path)
+    controller.key("enter")  # nothing waiting yet
+    assert calls == []
+    controller.update_inputs(pending_tracking(), ())
+    controller.key("enter")
+    controller.key("escape")
+    assert calls == ["confirm", "cancel"]
+
+
+def test_confirm_does_nothing_unless_someone_is_waiting(tmp_path):
+    controller, calls = make_with_designer_hooks(tmp_path)
+    controller.press("designer.confirm")
+    assert calls == []
