@@ -5,7 +5,7 @@ import pytest
 
 from holostudio.camera.capture import Frame
 from holostudio.config import HAND_LANDMARKER_FILE
-from holostudio.tracking.types import HandFrame, Landmark, TrackingState
+from holostudio.tracking.types import HandFrame, Landmark
 from holostudio.tracking.worker import TrackingWorker
 
 
@@ -36,27 +36,11 @@ class FakeDetector:
         self.closed = True
 
 
-class FakeIdentity:
-    """Every hand is the designer's once enrolment was requested."""
+class KeepAll:
+    """A user filter that keeps every hand (unit tests never load the pose model)."""
 
-    def __init__(self):
-        self.enrolled = False
-
-    def request_enrollment(self, now):
-        self.enrolled = True
-
-    def confirm(self):
-        self.confirmed = True
-
-    def cancel(self):
-        self.enrolled = False
-
-    def process(self, image, timestamp, hands):
-        from holostudio.tracking.types import DesignerInfo
-
-        if not self.enrolled:
-            return tuple(False for _ in hands), DesignerInfo()
-        return tuple(True for _ in hands), DesignerInfo("locked", "Đã khóa người thiết kế")
+    def mask(self, image, timestamp, hands):
+        return tuple(True for _ in hands)
 
     def close(self):
         pass
@@ -77,7 +61,7 @@ def push(camera, value, index):
 
 def test_publishes_tracking_and_no_hand_states():
     camera = FakeCamera()
-    worker = TrackingWorker(camera, FakeDetector, FakeIdentity)
+    worker = TrackingWorker(camera, FakeDetector, KeepAll)
     worker.start()
     try:
         push(camera, 1, 1)
@@ -94,7 +78,7 @@ def test_publishes_tracking_and_no_hand_states():
 
 def test_keeps_running_after_a_bad_frame():
     camera = FakeCamera()
-    worker = TrackingWorker(camera, lambda: FakeDetector(fail_on={3}), FakeIdentity)
+    worker = TrackingWorker(camera, lambda: FakeDetector(fail_on={3}), KeepAll)
     worker.start()
     try:
         push(camera, 3, 1)
@@ -109,7 +93,7 @@ def test_reports_a_model_that_cannot_load():
     def broken():
         raise RuntimeError("no model")
 
-    worker = TrackingWorker(FakeCamera(), broken, FakeIdentity)
+    worker = TrackingWorker(FakeCamera(), broken, KeepAll)
     worker.start()
     try:
         assert wait_for(lambda: worker.state.status == "error")
@@ -137,79 +121,47 @@ def test_real_mediapipe_detector_runs_fast_on_a_camera_sized_frame():
     assert per_frame < 0.1, f"{per_frame * 1000:.1f} ms per frame"
 
 
-def test_choosing_a_designer_marks_their_hands():
+class FirstHandOnly:
+    """Pretends the first hand belongs to the nearest user and the rest do not."""
+
+    def mask(self, image, timestamp, hands):
+        return tuple(i == 0 for i in range(len(hands)))
+
+    def close(self):
+        pass
+
+
+class TwoHands(FakeDetector):
+    def detect(self, image, timestamp):
+        other = tuple(Landmark(0.9, 0.9, 0) for _ in range(21))
+        return HandFrame((HAND, other), ("Right", "Left"), timestamp)
+
+
+def test_only_the_nearest_users_hands_go_on_and_the_rest_are_set_aside():
     camera = FakeCamera()
-    worker = TrackingWorker(camera, FakeDetector, FakeIdentity)
+    worker = TrackingWorker(camera, TwoHands, FirstHandOnly)
     worker.start()
     try:
-        push(camera, 1, 1)
+        push(camera, 2, 1)
         assert wait_for(lambda: worker.state.status == "tracking")
-        assert worker.state.designer.status == "unset"
-        assert worker.state.frame.designer_hands == (False,)
-
-        worker.request_designer()
-        push(camera, 1, 2)
-        assert wait_for(lambda: worker.state.designer.locked)
-        assert worker.state.frame.designer_hands == (True,)
+        frame = worker.state.frame
+        assert frame.hands == (HAND,) and frame.handedness == ("Right",)
+        assert len(frame.other_hands) == 1
+        assert worker.state.message == "Đã nhận diện 1/2 bàn tay."
     finally:
         worker.stop()
 
 
-def test_hand_tracking_keeps_working_if_the_identity_models_fail():
-    def broken_identity():
-        raise RuntimeError("no face model")
+def test_hand_tracking_still_works_if_the_pose_model_fails():
+    def broken_filter():
+        raise RuntimeError("no pose model")
 
     camera = FakeCamera()
-    worker = TrackingWorker(camera, FakeDetector, broken_identity)
+    worker = TrackingWorker(camera, TwoHands, broken_filter)
     worker.start()
     try:
-        push(camera, 1, 1)
+        push(camera, 2, 1)
         assert wait_for(lambda: worker.state.status == "tracking")
-        assert worker.state.designer.status == "unavailable"
-        assert worker.state.frame.designer_hands == (False,)
-    finally:
-        worker.stop()
-
-
-def test_designer_only_keeps_just_the_designers_hands():
-    from holostudio.tracking.types import DesignerInfo
-
-    other = tuple(Landmark(0.9, 0.9, 0) for _ in range(21))
-    state = TrackingState(
-        "tracking",
-        "",
-        HandFrame((HAND, other), ("Right", "Left"), 1.0, (True, False)),
-        DesignerInfo("locked", ""),
-    )
-    mine = state.designer_only()
-    assert mine.frame.hands == (HAND,)
-    assert mine.frame.handedness == ("Right",)
-    assert mine.status == "tracking"
-
-    nobody = TrackingState("tracking", "", HandFrame((other,), ("Left",), 1.0, (False,)))
-    assert nobody.designer_only().status == "no-hand"
-
-
-def test_confirm_and_cancel_reach_the_identity_thread():
-    camera = FakeCamera()
-    identities = []
-
-    def factory():
-        identities.append(FakeIdentity())
-        return identities[-1]
-
-    worker = TrackingWorker(camera, FakeDetector, factory)
-    worker.confirm_designer()  # before tracking starts: ignored safely
-    worker.start()
-    try:
-        push(camera, 1, 1)
-        assert wait_for(lambda: worker.state.status == "tracking")
-        worker.request_designer()
-        push(camera, 1, 2)
-        assert wait_for(lambda: identities[0].enrolled)
-        worker.confirm_designer()
-        assert getattr(identities[0], "confirmed", False)
-        worker.cancel_designer()
-        assert not identities[0].enrolled
+        assert len(worker.state.frame.hands) == 2  # no filter: every hand is used
     finally:
         worker.stop()

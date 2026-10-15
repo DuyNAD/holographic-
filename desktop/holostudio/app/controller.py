@@ -24,11 +24,13 @@ from holostudio.hud.widgets import HudContext, LibraryEntry
 from holostudio.scene.history import HistoryAction, Redo, Undo, create_history, reduce_history
 from holostudio.scene.state import (
     AddObject,
+    GroupObjects,
     RemoveObject,
     Rotate,
     Scale,
     Select,
     Translate,
+    UngroupObject,
     create_model_object,
     create_shape_object,
     find_spawn_position,
@@ -45,12 +47,8 @@ GUIDE_ROWS = (
     ("Chụm", "Chụm ngón cái và ngón trỏ", "Chọn và kéo"),
     ("Nắm + phẩy", "Một tay nắm giữ vật, tay kia mở và phẩy", "Xoay 3D"),
     ("Mở tay", "Mở bàn tay đang nắm hoặc chụm", "Thả vật thể"),
-    (
-        "Người thiết kế",
-        "Người gần camera nhất bấm nút, rồi Xác nhận",
-        "Chỉ tay người đó điều khiển",
-    ),
     ("Hai tay chụm", "Chụm ngón trên hai tay", "Đổi kích thước"),
+    ("Ghép khối", "Bấm Ghép, chụm vào từng khối", "Gộp thành 1 khối"),
 )
 
 KEY_ACTIONS: dict[str, HistoryAction] = {
@@ -81,9 +79,6 @@ class StudioController:
         calibrated: bool,
         pick_file: Callable[[], Path | None],
         on_camera_start: Callable[[], None] = lambda: None,
-        on_designer_request: Callable[[], None] = lambda: None,
-        on_designer_confirm: Callable[[], None] = lambda: None,
-        on_designer_cancel: Callable[[], None] = lambda: None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.library = library
@@ -92,16 +87,15 @@ class StudioController:
         self._settings_file = settings_file
         self._pick_file = pick_file
         self._on_camera_start = on_camera_start
-        self._on_designer_request = on_designer_request
-        self._on_designer_confirm = on_designer_confirm
-        self._on_designer_cancel = on_designer_cancel
-        self.designer_status = "unset"
         self._clock = clock
 
         self.history = create_history(load_scene(scene_file))
         self.calibration = Calibration(open_=not calibrated)
         self.collapsed = False
         self.panel: str | None = None
+        # Grouping mode: objects picked (in order) to be joined into one group.
+        self.grouping = False
+        self.group_picks: list[str] = []
         self.library_page = 0
         self.library_message = "GLB tối đa 25 MB · lưu trên thiết bị."
         self.library_error = False
@@ -142,7 +136,6 @@ class StudioController:
             hand_tracked=tracking.status == "tracking",
             pinch_seen=any(g.name == "pinch" for g in gestures),
         )
-        self.designer_status = tracking.designer.status
 
     def press(self, widget_id: str) -> None:
         """Handles a HUD button, whether it was clicked or pressed by hand."""
@@ -155,13 +148,27 @@ class StudioController:
         if widget_id == "menu.toggle":
             self.collapsed = not self.collapsed
             self.panel = None
+            self.stop_grouping()
         elif widget_id in ("menu.add", "menu.guide"):
+            self.stop_grouping()
             name = widget_id.removeprefix("menu.")
             self.panel = None if self.panel == name else name
+        elif widget_id == "menu.group":
+            if self.grouping:
+                self.stop_grouping()
+            else:
+                self.start_grouping()
+        elif widget_id == "group.confirm":
+            self.confirm_grouping()
+        elif widget_id == "group.cancel":
+            self.stop_grouping()
+        elif widget_id == "menu.ungroup":
+            self.ungroup_selected()
         elif widget_id == "menu.delete":
             self.delete_selected()
         elif widget_id == "panel.close":
             self.panel = None
+            self.stop_grouping()
         elif widget_id.startswith("shape."):
             obj = create_shape_object(widget_id.removeprefix("shape."), self._spawn())
             self.dispatch(AddObject(obj))
@@ -188,12 +195,6 @@ class StudioController:
         elif widget_id == "toast.undo":
             self.dispatch(Undo())
             self.toast = None
-        elif widget_id in ("menu.designer", "designer.retry"):
-            self.choose_designer()
-        elif widget_id == "designer.confirm" and self.designer_status == "pending":
-            self._on_designer_confirm()
-        elif widget_id == "designer.cancel":
-            self._on_designer_cancel()
         elif widget_id == "camera.toggle":
             self.toggle_camera()
 
@@ -201,14 +202,9 @@ class StudioController:
         if name == "escape":
             if self.calibration.open:
                 self._press_calibration("skip")
-            elif self.designer_status in ("pending", "enrolling"):
-                self._on_designer_cancel()
             else:
                 self.panel = None
-            return
-        if name == "enter":
-            if self.designer_status == "pending" and not self.calibration.open:
-                self._on_designer_confirm()
+                self.stop_grouping()
             return
         if self.calibration.open:
             return
@@ -222,8 +218,48 @@ class StudioController:
             self.dispatch(KEY_ACTIONS[name])
 
     def click_scene(self, object_id: str | None) -> None:
-        if not self.calibration.open:
-            self.dispatch(Select(object_id))
+        if self.calibration.open:
+            return
+        if self.grouping:
+            if object_id is not None:
+                self.toggle_group_pick(object_id)
+            return
+        self.dispatch(Select(object_id))
+
+    # --- grouping -------------------------------------------------------------
+
+    def start_grouping(self) -> None:
+        """Pick objects to join; the selected object (if any) is picked already."""
+        self.grouping = True
+        self.panel = "group"
+        self.group_picks = [self.scene.selected_id] if self.scene.selected_id else []
+
+    def stop_grouping(self) -> None:
+        if self.grouping:
+            self.grouping = False
+            self.group_picks = []
+            if self.panel == "group":
+                self.panel = None
+
+    def toggle_group_pick(self, object_id: str) -> None:
+        if not self.grouping or self.scene.find(object_id) is None:
+            return
+        if object_id in self.group_picks:
+            self.group_picks.remove(object_id)
+        else:
+            self.group_picks.append(object_id)
+
+    def confirm_grouping(self) -> None:
+        picks = [object_id for object_id in self.group_picks if self.scene.find(object_id)]
+        if len(picks) < 2:
+            return
+        self.dispatch(GroupObjects(tuple(picks)))
+        self.stop_grouping()
+
+    def ungroup_selected(self) -> None:
+        selected = self.scene.selected
+        if selected is not None and selected.kind == "group":
+            self.dispatch(UngroupObject(selected.id))
 
     @property
     def camera_running(self) -> bool:
@@ -279,25 +315,11 @@ class StudioController:
         self._saved_objects = self.scene.objects
         self._dirty_since = None
 
-    def choose_designer(self) -> None:
-        """Record the person nearest the camera as the designer (camera starts if needed)."""
-        if not self.camera_running:
-            self.camera.start()
-            self._on_camera_start()
-        self._on_designer_request()
-
-    def hand_may_press(self, widget_id: str, designer_status: str) -> bool:
-        """Hands control the HUD only once a designer is locked; before that they can
-        only reach the designer button (and the calibration steps). While a recorded
-        person waits for confirmation, only the confirmation buttons respond (and the
-        app only passes on that person's hands)."""
+    def hand_may_press(self, widget_id: str) -> bool:
+        """While calibrating, hands can only reach the calibration buttons."""
         if self.calibration.open:
             return widget_id.startswith("calibration.")
-        if designer_status == "pending":
-            return widget_id.startswith("designer.")
-        if designer_status == "locked":
-            return True
-        return widget_id in ("menu.designer", "menu.toggle")
+        return True
 
     def hud_context(
         self,
@@ -310,10 +332,6 @@ class StudioController:
         if any(g.name == "fist" for g in gestures) and self.scene.selected is None:
             # The fist found no object under it: say why nothing turns.
             gesture_label = "Nắm · chưa chọn vật"
-        elif primary and tracking.designer.pending and not self.calibration.open:
-            gesture_label = "Chờ xác nhận người TK"
-        elif primary and not tracking.designer.locked and not self.calibration.open:
-            gesture_label = "Chưa chọn người TK"
         elif primary:
             gesture_label = GESTURE_LABELS[primary.name]
         elif tracking.status == "tracking":
@@ -331,6 +349,9 @@ class StudioController:
             collapsed=self.collapsed,
             panel=self.panel,
             selected_name=selected.name if selected else None,
+            selected_is_group=selected is not None and selected.kind == "group",
+            grouping=self.grouping,
+            group_count=sum(1 for object_id in self.group_picks if self.scene.find(object_id)),
             gesture_label=gesture_label,
             confidence=confidence,
             camera_badge=STATUS_LABELS[self.camera.status],
@@ -353,8 +374,4 @@ class StudioController:
                 self.calibration.view(self._calibration_inputs) if self.calibration.open else None
             ),
             guide_rows=GUIDE_ROWS,
-            designer_status=tracking.designer.status if camera_active else "unset",
-            designer_message=tracking.designer.message
-            if camera_active
-            else "Bật camera để chọn người TK",
         )

@@ -11,7 +11,7 @@ from typing import Protocol
 from holostudio.camera.capture import CameraStream, Frame
 from holostudio.config import MAX_TRACKED_HANDS
 
-from .types import DesignerInfo, HandFrame, TrackingState
+from .types import HandFrame, TrackingState
 
 
 class Detector(Protocol):
@@ -19,18 +19,15 @@ class Detector(Protocol):
     def close(self) -> None: ...
 
 
-class Identity(Protocol):
-    def request_enrollment(self, now: float) -> None: ...
-    def confirm(self) -> None: ...
-    def cancel(self) -> None: ...
-    def process(self, image, timestamp: float, hands) -> tuple[tuple[bool, ...], DesignerInfo]: ...
+class UserFilter(Protocol):
+    def mask(self, image, timestamp: float, hands) -> tuple[bool, ...]: ...
     def close(self) -> None: ...
 
 
-def _default_identity() -> Identity:
-    from holostudio.identity.pipeline import default_identity_pipeline
+def _default_user_filter() -> UserFilter:
+    from holostudio.identity.nearest import default_nearest_filter
 
-    return default_identity_pipeline()
+    return default_nearest_filter()
 
 
 def _default_detector() -> Detector:
@@ -49,13 +46,11 @@ class TrackingWorker:
         self,
         camera: CameraStream,
         detector_factory: Callable[[], Detector] = _default_detector,
-        identity_factory: Callable[[], Identity] = _default_identity,
+        user_filter_factory: Callable[[], UserFilter] = _default_user_filter,
     ) -> None:
         self._camera = camera
         self._factory = detector_factory
-        self._identity_factory = identity_factory
-        self._designer_requested = threading.Event()
-        self._identity: Identity | None = None
+        self._user_filter_factory = user_filter_factory
         self._lock = threading.Lock()
         self._state = IDLE
         self._stop = threading.Event()
@@ -72,20 +67,6 @@ class TrackingWorker:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="tracking", daemon=True)
         self._thread.start()
-
-    def request_designer(self) -> None:
-        """Record the person nearest the camera as the designer (on the next frame)."""
-        self._designer_requested.set()
-
-    def confirm_designer(self) -> None:
-        """The user accepts the recorded person as the designer."""
-        if self._identity is not None:
-            self._identity.confirm()
-
-    def cancel_designer(self) -> None:
-        """The user rejects the recorded person; the previous designer stays."""
-        if self._identity is not None:
-            self._identity.cancel()
 
     def stop(self) -> None:
         self._stop.set()
@@ -106,12 +87,9 @@ class TrackingWorker:
             self._set(TrackingState("error", "Không thể tải mô hình nhận diện tay."))
             return
         try:
-            identity: Identity | None = self._identity_factory()
-            self._identity = identity
-            designer = DesignerInfo()
+            user_filter: UserFilter | None = self._user_filter_factory()
         except Exception:
-            identity = None
-            designer = DesignerInfo("unavailable", "Lỗi mô hình nhận diện người")
+            user_filter = None  # without body pose, every hand in view is used
 
         last_index = -1
         try:
@@ -126,22 +104,12 @@ class TrackingWorker:
 
                 try:
                     hand_frame = detector.detect(frame.image, frame.timestamp)
-                    mine = tuple(False for _ in hand_frame.hands)
-                    if identity is not None:
-                        if self._designer_requested.is_set():
-                            self._designer_requested.clear()
-                            identity.request_enrollment(frame.timestamp)
-                        mine, designer = identity.process(
-                            frame.image, frame.timestamp, hand_frame.hands
-                        )
-                    hand_frame = replace(hand_frame, designer_hands=mine)
+                    if user_filter is not None and hand_frame.hands:
+                        mask = user_filter.mask(frame.image, frame.timestamp, hand_frame.hands)
+                        hand_frame = _keep_nearest_user(hand_frame, mask)
                 except Exception:
                     # One bad frame must not stop tracking: report it and keep going.
-                    self._set(
-                        TrackingState(
-                            "error", "Không thể xử lý khung hình camera.", designer=designer
-                        )
-                    )
+                    self._set(TrackingState("error", "Không thể xử lý khung hình camera."))
                     continue
 
                 count = len(hand_frame.hands)
@@ -152,11 +120,21 @@ class TrackingWorker:
                         if count
                         else NO_HAND_MESSAGE,
                         hand_frame,
-                        designer,
                     )
                 )
         finally:
             detector.close()
-            if identity is not None:
-                self._identity = None
-                identity.close()
+            if user_filter is not None:
+                user_filter.close()
+
+
+def _keep_nearest_user(frame: HandFrame, mask: tuple[bool, ...]) -> HandFrame:
+    """Only the nearest user's hands go on to gestures; the rest are set aside."""
+    keep = [i for i, mine in enumerate(mask) if mine]
+    drop = [i for i, mine in enumerate(mask) if not mine]
+    return replace(
+        frame,
+        hands=tuple(frame.hands[i] for i in keep),
+        handedness=tuple(frame.handedness[i] for i in keep if i < len(frame.handedness)),
+        other_hands=tuple(frame.hands[i] for i in drop),
+    )

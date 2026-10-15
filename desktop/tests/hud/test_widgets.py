@@ -103,13 +103,6 @@ def test_the_guide_shows_every_gesture_and_the_recalibrate_button(size):
     assert all(f"guide.{name}.name" in found for name, _i, _a in GUIDE_ROWS)
 
 
-def test_the_menu_has_a_designer_button_marked_when_locked():
-    widgets = build_hud(HudContext(1280, 720, designer_status="locked"))
-    button = next(w for w in widgets if w.id == "menu.designer")
-    assert button.interactive and button.pressed
-    assert not next(w for w in build_hud(HudContext(1280, 720)) if w.id == "menu.designer").pressed
-
-
 @pytest.mark.parametrize("size", SIZES + [(1024, 600), (740, 480)])
 @pytest.mark.parametrize("panel", ["add", "guide"])
 def test_open_panels_never_cover_the_status_bar_camera_or_dock(size, panel):
@@ -135,17 +128,26 @@ def test_open_panels_never_cover_the_status_bar_camera_or_dock(size, panel):
             assert not overlap(rects["panel"], rects[other]), other
 
 
+def test_group_and_ungroup_buttons_on_the_menu():
+    widgets = {w.id: w for w in build_hud(HudContext(1280, 720))}
+    assert widgets["menu.group"].enabled
+    assert not widgets["menu.ungroup"].enabled  # nothing (or no group) selected
+    widgets = {w.id: w for w in build_hud(HudContext(1280, 720, selected_is_group=True))}
+    assert widgets["menu.ungroup"].enabled
+
+
 @pytest.mark.parametrize("size", SIZES + [(1024, 600), (740, 480)])
-def test_the_confirm_dialog_shows_only_while_waiting_and_leaves_the_camera_visible(size):
-    assert not any(w.id.startswith("designer.") for w in build_hud(HudContext(*size)))
-
-    widgets = build_hud(HudContext(*size, designer_status="pending"))
-    rects = {w.id: w.rect for w in widgets}
-    assert {"designer.confirm", "designer.retry", "designer.cancel"} <= set(rects)
-
-    def overlap(a, b):
-        return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h
-
-    for other in ("camera.window", "status.brand", "status.gesture", "menu.dock"):
-        assert not overlap(rects["designer.dialog"], rects[other]), other
-    assert press_target(widgets, centre(widgets, "designer.confirm")) == "designer.confirm"
+def test_the_grouping_panel_counts_picks_and_fits(size):
+    one = {
+        w.id: w for w in build_hud(HudContext(*size, panel="group", grouping=True, group_count=1))
+    }
+    assert not one["group.confirm"].enabled
+    assert one["menu.group"].pressed
+    three = {
+        w.id: w for w in build_hud(HudContext(*size, panel="group", grouping=True, group_count=3))
+    }
+    assert three["group.confirm"].enabled and three["group.confirm"].text == "Ghép 3 khối"
+    assert "group.cancel" in three
+    for widget in three.values():
+        r = widget.rect
+        assert r.x + r.w <= size[0] + 1e-6 and r.y + r.h <= size[1] + 1e-6, widget.id

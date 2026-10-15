@@ -60,8 +60,11 @@ class HudContext:
     width: int
     height: int
     collapsed: bool = False
-    panel: Literal["add", "guide"] | None = None
+    panel: Literal["add", "guide", "group"] | None = None
     selected_name: str | None = None
+    selected_is_group: bool = False
+    grouping: bool = False  # picking objects to join into one group
+    group_count: int = 0
     gesture_label: str = "Chưa nhận diện"
     confidence: float = 0.0
     camera_badge: str = "Đang tắt"
@@ -69,8 +72,6 @@ class HudContext:
     camera_active: bool = False
     camera_running: bool = False  # open, even if it only sends black frames
     camera_busy: bool = False
-    designer_status: str = "unset"  # unset, enrolling, locked, absent, unavailable
-    designer_message: str = "Chưa chọn người thiết kế"
     tracking_message: str = "Video chỉ xử lý trên thiết bị."
     library: tuple[LibraryEntry, ...] = ()
     library_page: int = 0
@@ -123,8 +124,6 @@ def build_hud(ctx: HudContext) -> tuple[Widget, ...]:
     _menu(b, ctx, u, narrow)
     if ctx.toast:
         _toast(b, ctx, u, narrow)
-    if ctx.designer_status == "pending" and not ctx.calibration:
-        _designer_confirm(b, ctx, u)
     if ctx.calibration:
         _calibration(b, ctx, u)
     return tuple(b.widgets)
@@ -160,9 +159,8 @@ def _camera(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
     width = (12 if narrow else 19) * u
     video_h = width * 9 / 16
     header, footer = 2.6 * u, 3.2 * u
-    designer_row = 2.2 * u
     x = ctx.width - u - width
-    total = header + designer_row + video_h + footer
+    total = header + video_h + footer
     y = ctx.height - u - total if narrow else u
 
     b.add("camera.window", "glass", Rect(x, y, width, total))
@@ -174,16 +172,7 @@ def _camera(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
         ctx.camera_badge,
         size=0.75,
     )
-    locked = ctx.designer_status == "locked"
-    b.add(
-        "camera.designer",
-        "label" if locked else "muted",
-        Rect(x + 0.8 * u, y + header, width - 1.6 * u, designer_row),
-        ("● " if locked else "○ ") + ctx.designer_message,
-        size=0.72,
-        pressed=locked,
-    )
-    video_y = y + header + designer_row
+    video_y = y + header
     video_text = "" if ctx.camera_active else ctx.camera_message
     b.add("camera.video", "camera", Rect(x, video_y, width, video_h), video_text)
     footer_y = video_y + video_h
@@ -219,14 +208,9 @@ def _menu(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
         buttons += [
             ("menu.add", "+\nThêm", "button", True, ctx.panel == "add"),
             ("menu.delete", "×\nXóa", "danger", ctx.selected_name is not None, False),
+            ("menu.group", "Ghép\nkhối", "button", True, ctx.grouping),
+            ("menu.ungroup", "Tách\nkhối", "button", ctx.selected_is_group, False),
             ("menu.guide", "?\nHướng dẫn", "button", True, ctx.panel == "guide"),
-            (
-                "menu.designer",
-                "●\nNgười TK",
-                "button",
-                True,
-                ctx.designer_status in ("locked", "enrolling"),
-            ),
         ]
 
     count = len(buttons)
@@ -280,7 +264,7 @@ def _panel_content(
     """Appends (id, kind, relative rect, text, extra) and returns the content height."""
     pad = 0.9 * u
     inner = width - 2 * pad
-    title = "Thêm vật thể" if ctx.panel == "add" else "Hướng dẫn"
+    title = {"add": "Thêm vật thể", "group": "Ghép khối"}.get(ctx.panel, "Hướng dẫn")
     content.append(("panel.title", "title", (pad, 0, inner, 3 * u), title, {}))
     content.append(
         ("panel.close", "button", (width - pad - 2.2 * u, 0.4 * u, 2.2 * u, 2.2 * u), "×", {})
@@ -382,6 +366,39 @@ def _panel_content(
             )
         )
         y += 2.8 * u
+    elif ctx.panel == "group":
+        content.append(
+            (
+                "group.help",
+                "label",
+                (pad, y, inner, 3.4 * u),
+                "Chụm tay (hoặc bấm chuột) vào từng khối để chọn hoặc bỏ chọn.",
+                {"size": 0.75},
+            )
+        )
+        y += 3.8 * u
+        content.append(
+            (
+                "group.count",
+                "title",
+                (pad, y, inner, 2.4 * u),
+                f"Đã chọn {ctx.group_count} khối",
+                {"size": 0.95},
+            )
+        )
+        y += 2.8 * u
+        content.append(
+            (
+                "group.confirm",
+                "button",
+                (pad, y, inner, 2.8 * u),
+                f"Ghép {ctx.group_count} khối" if ctx.group_count >= 2 else "Chọn ít nhất 2 khối",
+                {"enabled": ctx.group_count >= 2, "pressed": ctx.group_count >= 2},
+            )
+        )
+        y += 3.2 * u
+        content.append(("group.cancel", "tile", (pad, y, inner, 2.6 * u), "Hủy", {}))
+        y += 3.0 * u
     else:
         section("Cử chỉ tay")
         for name, instruction, action in ctx.guide_rows:
@@ -438,53 +455,6 @@ def _panel_content(
         )
         y += 3.2 * u
     return y + 0.4 * u
-
-
-def _designer_confirm(b: _Builder, ctx: HudContext, u: float) -> None:
-    """Asks the user to confirm the recorded person before hand control is locked.
-
-    No backdrop: the camera window (with the amber box around the recorded face)
-    must stay visible so the user can see who would be locked.
-    """
-    width = min(26 * u, ctx.width - 2 * u)
-    height = 13 * u
-    x = (ctx.width - width) / 2
-    y = max(5 * u, (ctx.height - height) / 2 - 4 * u)
-    b.add("designer.dialog", "glass", Rect(x, y, width, height))
-    b.add(
-        "designer.title",
-        "title",
-        Rect(x, y + 0.8 * u, width, 2.6 * u),
-        "Khóa người thiết kế?",
-        size=1.2,
-        align="center",
-    )
-    b.add(
-        "designer.body",
-        "label",  # brighter than muted: it sits over the 3D scene
-        Rect(x + 1.5 * u, y + 3.6 * u, width - 3 * u, 3.6 * u),
-        "Người trong khung vàng ở ô camera sẽ là người duy nhất điều khiển bằng tay.",
-        size=0.75,
-        align="center",
-    )
-    gap = 0.5 * u
-    button_w = (width - 3 * u - 2 * gap) / 3
-    by = y + height - 4 * u
-    for index, (action, kind, label) in enumerate(
-        (
-            ("confirm", "button", "Xác nhận"),
-            ("retry", "tile", "Chọn lại"),
-            ("cancel", "tile", "Hủy"),
-        )
-    ):
-        b.add(
-            f"designer.{action}",
-            kind,
-            Rect(x + 1.5 * u + index * (button_w + gap), by, button_w, 2.8 * u),
-            label,
-            size=0.85,
-            pressed=action == "confirm",
-        )
 
 
 def _toast(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:

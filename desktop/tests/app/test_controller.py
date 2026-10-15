@@ -202,9 +202,7 @@ def test_hud_explains_a_fist_with_nothing_selected(make):
 
     controller, _ = make()
     fist = StableGesture(0, "Right", "fist", 1.0, (Landmark(0.5, 0.5, 0),) * 21, 1)
-    from holostudio.tracking.types import DesignerInfo
-
-    tracking = TrackingState("tracking", designer=DesignerInfo("locked", "Đã khóa"))
+    tracking = TrackingState("tracking")
     assert controller.hud_context(1280, 720, tracking, (fist,)).gesture_label == (
         "Nắm · chưa chọn vật"
     )
@@ -212,103 +210,55 @@ def test_hud_explains_a_fist_with_nothing_selected(make):
     assert controller.hud_context(1280, 720, tracking, (fist,)).gesture_label == "Nắm tay"
 
 
-def test_hands_are_locked_until_a_designer_is_chosen(make):
-    from holostudio.gestures.engine import StableGesture
-    from holostudio.tracking.types import DesignerInfo, Landmark
-
-    controller, _ = make()
-    point = StableGesture(0, "Right", "point", 1.0, (Landmark(0.5, 0.5, 0),) * 21, 1)
-    unset = TrackingState("tracking")
-    assert controller.hud_context(1280, 720, unset, (point,)).gesture_label == (
-        "Chưa chọn người TK"
-    )
-    # Before a designer is locked, a hand can only reach the designer button.
-    assert controller.hand_may_press("menu.designer", "unset")
-    assert controller.hand_may_press("menu.toggle", "unset")
-    assert not controller.hand_may_press("menu.add", "unset")
-    assert controller.hand_may_press("menu.add", "locked")
-    # Waiting for confirmation: only the confirmation buttons respond to hands.
-    assert controller.hand_may_press("designer.confirm", "pending")
-    assert not controller.hand_may_press("menu.add", "pending")
-
-    locked = TrackingState("tracking", designer=DesignerInfo("locked", "Đã khóa"))
-    assert controller.hud_context(1280, 720, locked, (point,)).gesture_label == "Trỏ"
-
-
-def test_calibration_buttons_stay_reachable_by_hand(make):
+def test_while_calibrating_hands_only_reach_the_calibration_buttons(make):
     controller, _ = make(calibrated=False)
-    assert controller.hand_may_press("calibration.skip", "unset")
-    assert not controller.hand_may_press("menu.designer", "unset")
+    assert controller.hand_may_press("calibration.skip")
+    assert not controller.hand_may_press("menu.add")
+    calibrated, _ = make()
+    assert calibrated.hand_may_press("menu.add")
 
 
-def test_choosing_a_designer_starts_the_camera_and_asks_tracking(tmp_path, glb_file):
-    requests = []
-    camera = FakeCamera()
-    controller = StudioController(
-        library=ModelLibrary(tmp_path / "library", parse=lambda _p: None),
-        camera=camera,
-        scene_file=tmp_path / "scene.json",
-        settings_file=tmp_path / "settings.json",
-        calibrated=True,
-        pick_file=lambda: None,
-        on_designer_request=lambda: requests.append(True),
-    )
-    controller.press("menu.designer")
-    assert camera.active
-    assert requests == [True]
-    # Mouse and keyboard keep working without a designer.
+def test_grouping_mode_picks_objects_and_joins_them(make):
+    controller, _ = make()
     controller.click_scene("box-1")
-    controller.key("delete")
-    assert controller.scene.find("box-1") is None
+    controller.press("menu.group")
+    assert controller.grouping and controller.panel == "group"
+    assert controller.group_picks == ["box-1"]  # the selected object starts picked
+
+    controller.click_scene("sphere-1")  # in grouping mode, clicks pick instead of select
+    controller.click_scene("cylinder-1")
+    controller.click_scene("cylinder-1")  # clicking again un-picks it
+    assert controller.group_picks == ["box-1", "sphere-1"]
+    assert hud(controller).group_count == 2
+
+    controller.press("group.confirm")
+    assert not controller.grouping and controller.panel is None
+    group = controller.scene.selected
+    assert group.kind == "group"
+    assert [child.id for child in group.children] == ["box-1", "sphere-1"]
+    assert hud(controller).selected_is_group
+
+    controller.press("menu.ungroup")
+    assert controller.scene.find("box-1") and controller.scene.find("sphere-1")
+    controller.key("control-z")
+    assert controller.scene.find(group.id) is not None
 
 
-def make_with_designer_hooks(tmp_path):
-    calls = []
-    controller = StudioController(
-        library=ModelLibrary(tmp_path / "library", parse=lambda _p: None),
-        camera=FakeCamera(),
-        scene_file=tmp_path / "scene.json",
-        settings_file=tmp_path / "settings.json",
-        calibrated=True,
-        pick_file=lambda: None,
-        on_designer_request=lambda: calls.append("request"),
-        on_designer_confirm=lambda: calls.append("confirm"),
-        on_designer_cancel=lambda: calls.append("cancel"),
-    )
-    return controller, calls
+def test_grouping_needs_two_objects_and_can_be_cancelled(make):
+    controller, _ = make()
+    controller.press("menu.group")
+    controller.click_scene("box-1")
+    controller.press("group.confirm")  # only one picked: nothing happens
+    assert controller.grouping
+    assert all(obj.kind != "group" for obj in controller.scene.objects)
 
-
-def pending_tracking():
-    from holostudio.tracking.types import DesignerInfo
-
-    return TrackingState("tracking", designer=DesignerInfo("pending", "Chờ xác nhận"))
-
-
-def test_a_recorded_designer_is_confirmed_retried_or_cancelled(tmp_path):
-    controller, calls = make_with_designer_hooks(tmp_path)
-    controller.camera.start()  # a person can only be recorded while the camera runs
-    controller.update_inputs(pending_tracking(), ())
-
-    context = controller.hud_context(1280, 720, pending_tracking(), ())
-    assert context.designer_status == "pending"
-
-    controller.press("designer.confirm")
-    controller.press("designer.retry")
-    controller.press("designer.cancel")
-    assert calls == ["confirm", "request", "cancel"]
-
-
-def test_enter_confirms_and_escape_cancels_a_recorded_designer(tmp_path):
-    controller, calls = make_with_designer_hooks(tmp_path)
-    controller.key("enter")  # nothing waiting yet
-    assert calls == []
-    controller.update_inputs(pending_tracking(), ())
-    controller.key("enter")
     controller.key("escape")
-    assert calls == ["confirm", "cancel"]
+    assert not controller.grouping and controller.group_picks == []
 
 
-def test_confirm_does_nothing_unless_someone_is_waiting(tmp_path):
-    controller, calls = make_with_designer_hooks(tmp_path)
-    controller.press("designer.confirm")
-    assert calls == []
+def test_ungroup_only_works_on_a_group(make):
+    controller, _ = make()
+    controller.click_scene("box-1")
+    controller.press("menu.ungroup")
+    assert controller.scene.find("box-1") is not None
+    assert len(controller.history.past) == 0

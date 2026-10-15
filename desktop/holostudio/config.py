@@ -31,17 +31,7 @@ MAX_MODEL_FILE_BYTES = 25 * 1024 * 1024
 DWELL_SECONDS = 1.0
 UNDO_TOAST_SECONDS = 6.0
 
-# Designer identity (face + body), loaded once and kept on this machine.
-FACE_DETECTOR_URL = (
-    "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
-    "face_detection_yunet_2023mar.onnx"
-)
-FACE_DETECTOR_FILE = MODELS_DIR / "face_detection_yunet_2023mar.onnx"
-FACE_RECOGNIZER_URL = (
-    "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/"
-    "face_recognition_sface_2021dec.onnx"
-)
-FACE_RECOGNIZER_FILE = MODELS_DIR / "face_recognition_sface_2021dec.onnx"
+# Body pose (who is nearest the camera), loaded once and kept on this machine.
 POSE_LANDMARKER_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
     "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"

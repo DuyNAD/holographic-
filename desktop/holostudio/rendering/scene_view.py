@@ -21,6 +21,7 @@ from panda3d.core import (
     Point2,
     Point3,
     PointLight,
+    Vec3,
 )
 
 from holostudio.interaction.coordinates import ScreenPoint, screen_to_ndc
@@ -34,6 +35,8 @@ PICK_MASK = BitMask32.bit(1)
 CAMERA_POSITION = (6.5, 4.3, 7.5)  # scene coordinates, as in the original app
 VERTICAL_FOV = 42.0
 SELECTED_TINT = (1.15, 1.3, 1.4, 1)
+SELECTED_OUTLINE = (0.47, 0.92, 1, 1)
+MARKED_OUTLINE = (1.0, 0.82, 0.3, 1)  # picked for grouping
 
 
 def _hex_color(value: str) -> LColor:
@@ -127,7 +130,8 @@ class SceneView:
 
     # --- sync ----------------------------------------------------------------
 
-    def sync(self, scene: SceneState) -> None:
+    def sync(self, scene: SceneState, marked: frozenset[str] = frozenset()) -> None:
+        """`marked` are objects picked for grouping; they get an amber outline."""
         wanted = {obj.id: obj for obj in scene.objects}
 
         for object_id in list(self._nodes):
@@ -136,44 +140,72 @@ class SceneView:
 
         for obj in scene.objects:
             current = self._nodes.get(obj.id)
-            if current is None:
+            if current is None or (current[0].kind, current[0].children) != (
+                obj.kind,
+                obj.children,
+            ):
+                if current is not None:
+                    current[1].removeNode()
                 node = self._create_node(obj)
-                self._nodes[obj.id] = (obj, node)
             elif current[0] != obj:
                 node = current[1]
-                self._nodes[obj.id] = (obj, node)
             else:
                 continue
+            self._nodes[obj.id] = (obj, node)
             apply_transform(node, obj.position, obj.rotation, obj.scale)
 
-        if scene.selected_id != self._selected_id:
-            self._selected_id = scene.selected_id
+        self._selected_id = scene.selected_id
         for object_id, (_obj, node) in self._nodes.items():
             selected = object_id == self._selected_id
             node.setColorScale(*SELECTED_TINT) if selected else node.clearColorScale()
-            highlight = node.find("selection-outline")
-            if highlight:
-                highlight.show() if selected else highlight.hide()
+            outline = node.find("selection-outline")
+            if not outline:
+                continue
+            if object_id in marked:
+                outline.setColor(*MARKED_OUTLINE)
+                outline.show()
+            elif selected:
+                outline.setColor(*SELECTED_OUTLINE)
+                outline.show()
+            else:
+                outline.hide()
 
     def _create_node(self, obj: SceneObject) -> NodePath:
         holder = self.root.attachNewNode(f"object-{obj.id}")
+        # Only the top-level object carries the id, so touching any part of a group
+        # picks the whole group.
         holder.setPythonTag(OBJECT_TAG, obj.id)
-
-        if obj.kind == "model":
-            body = self._create_model(obj, holder)
-        else:
-            body = holder.attachNewNode(SHAPE_BUILDERS[obj.kind]())
-            body.setColor(_hex_color(obj.color))
+        body = self._build_body(obj, holder)
         body.setCollideMask(PICK_MASK)
 
-        outline = holder.attachNewNode(make_box(1.75))
+        outline = holder.attachNewNode(make_box(1.0))
         outline.setName("selection-outline")
+        if obj.kind == "group" and (bounds := body.getTightBounds(holder)):
+            low, high = bounds
+            outline.setPos((low + high) / 2)
+            outline.setScale((high - low) * 1.08 + Vec3(0.15, 0.15, 0.15))
+        else:
+            outline.setScale(1.75)
         outline.setRenderModeWireframe()
         outline.setLightOff()
-        outline.setColor(0.47, 0.92, 1, 1)
+        outline.setColor(*SELECTED_OUTLINE)
         outline.setCollideMask(BitMask32.allOff())
         outline.hide()
         return holder
+
+    def _build_body(self, obj: SceneObject, parent: NodePath) -> NodePath:
+        if obj.kind == "model":
+            return self._create_model(obj, parent)
+        if obj.kind == "group":
+            parts = parent.attachNewNode("group-parts")
+            for child in obj.children:
+                holder = parts.attachNewNode(f"part-{child.id}")
+                apply_transform(holder, child.position, child.rotation, child.scale)
+                self._build_body(child, holder)
+            return parts
+        body = parent.attachNewNode(SHAPE_BUILDERS[obj.kind]())
+        body.setColor(_hex_color(obj.color))
+        return body
 
     def _create_model(self, obj: SceneObject, holder: NodePath) -> NodePath:
         path = self._model_path(obj.asset_id) if obj.asset_id else None

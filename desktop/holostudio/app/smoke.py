@@ -21,7 +21,7 @@ from panda3d.core import Filename, loadPrcFileData
 
 from holostudio.calibration.flow import save_calibrated
 from holostudio.camera.capture import Frame
-from holostudio.tracking.types import DesignerInfo, HandFrame, Landmark, TrackingState
+from holostudio.tracking.types import HandFrame, Landmark, TrackingState
 
 FINGERS = ((5, 6, 8, 0.38), (9, 10, 12, 0.47), (13, 14, 16, 0.56), (17, 18, 20, 0.65))
 
@@ -44,42 +44,26 @@ def make_hand(gesture: str, screen_x: float, screen_y: float) -> tuple[Landmark,
 
 
 class ScriptedTracking:
-    """Stands in for TrackingWorker; the script sets the current hands.
-
-    Choosing a designer records them as a candidate who must be confirmed; hands
-    listed in `stranger_hands` belong to someone else in front of the camera.
-    """
+    """Stands in for TrackingWorker; the script sets the current hands."""
 
     def __init__(self) -> None:
         self.hands: tuple = ()
+        self.other_hands: tuple = ()  # someone farther away (set aside by the filter)
         self.timestamp = 0.0
         self.started = False
-        self.designer_status = "unset"
-        self.stranger_hands: set[int] = set()
 
     @property
     def state(self) -> TrackingState:
-        designer = DesignerInfo(self.designer_status, self.designer_status)
         if not self.hands:
-            return TrackingState("no-hand", "Đưa bàn tay vào giữa khung hình.", designer=designer)
+            return TrackingState(
+                "no-hand",
+                "Đưa bàn tay vào giữa khung hình.",
+                HandFrame(other_hands=self.other_hands, timestamp=self.timestamp),
+            )
         frame = HandFrame(
-            self.hands,
-            ("Right",) * len(self.hands),
-            self.timestamp,
-            tuple(i not in self.stranger_hands for i in range(len(self.hands))),
+            self.hands, ("Right",) * len(self.hands), self.timestamp, self.other_hands
         )
-        message = f"Đã nhận diện {len(self.hands)}/2 bàn tay."
-        return TrackingState("tracking", message, frame, designer)
-
-    def request_designer(self) -> None:
-        self.designer_status = "pending"
-
-    def confirm_designer(self) -> None:
-        if self.designer_status == "pending":
-            self.designer_status = "locked"
-
-    def cancel_designer(self) -> None:
-        self.designer_status = "unset"
+        return TrackingState("tracking", f"Đã nhận diện {len(self.hands)}/2 bàn tay.", frame)
 
     def start(self) -> None:
         self.started = True
@@ -158,30 +142,12 @@ def run(screenshot: Path | None = None) -> dict:
     checks: dict[str, bool] = {}
 
     frames(3)
-    dwell_on("menu.add")
-    checks["hands are locked until a designer is chosen"] = controller.panel is None
-
-    dwell_on("menu.designer")
-    checks["a recorded designer waits for confirmation"] = (
-        tracking.designer_status == "pending"
-        and any(w.id == "designer.confirm" for w in app.widgets)
-    )
-
-    tracking.stranger_hands = {0}
-    dwell_on("designer.confirm")
-    checks["a stranger cannot confirm"] = tracking.designer_status == "pending"
-    tracking.stranger_hands = set()
-
-    dwell_on("designer.confirm")
-    checks["the recorded person confirms and is locked"] = (
-        tracking.designer_status == "locked"
-        and not any(w.id == "designer.confirm" for w in app.widgets)
-    )
-
-    tracking.stranger_hands = {0}
-    dwell_on("menu.add")
-    checks["a stranger's hand is ignored"] = controller.panel is None
-    tracking.stranger_hands = set()
+    # Someone farther away points at a button: their hand is set aside, nothing happens.
+    x, y = centre_of("menu.add")
+    tracking.other_hands = (make_hand("point", x, y),)
+    frames(40)
+    tracking.other_hands = ()
+    checks["a farther person's hand does nothing"] = controller.panel is None
 
     dwell_on("menu.add")
     checks["dwell opens the add panel"] = controller.panel == "add"
@@ -245,6 +211,32 @@ def run(screenshot: Path | None = None) -> dict:
     controller.key("control-z")
     checks["the whole turn is one undo step"] = (
         controller.scene.find("box-1").rotation == rotation_before
+    )
+
+    # Join the sphere and the cylinder by hand, then split them again.
+    def pinch_tap(position) -> None:
+        x, y = screen_of(position)
+        frames(4, (make_hand("pinch", x, y),))
+        frames(3, (make_hand("point", x, y),))
+
+    dwell_on("menu.group")
+    pinch_tap(controller.scene.find("sphere-1").position)
+    pinch_tap(controller.scene.find("cylinder-1").position)
+    picked = list(controller.group_picks)
+    dwell_on("group.confirm")
+    group = controller.scene.selected
+    checks["pinch taps pick objects and Ghép joins them"] = (
+        "sphere-1" in picked
+        and "cylinder-1" in picked
+        and group is not None
+        and group.kind == "group"
+        and controller.scene.find("sphere-1") is None
+    )
+    dwell_on("menu.ungroup")
+    checks["Tách splits the group back"] = (
+        controller.scene.find("sphere-1") is not None
+        and controller.scene.find("cylinder-1") is not None
+        and all(obj.kind != "group" for obj in controller.scene.objects)
     )
 
     dwell_on("menu.toggle")

@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from holostudio.scene.history import SceneHistory
+from holostudio.scene.state import iter_objects
 
 from .loader import ModelLoadError, load_glb
 from .validation import model_name_from_file, validate_glb
@@ -45,7 +46,11 @@ class RemoveResult:
 
 def is_asset_referenced(history: SceneHistory, asset_id: str) -> bool:
     """An asset stays while the scene or its Undo/Redo history can still show it."""
-    return any(obj.asset_id == asset_id for scene in history.all_states() for obj in scene.objects)
+    return any(
+        obj.asset_id == asset_id
+        for scene in history.all_states()
+        for obj in iter_objects(scene.objects)  # models inside groups count too
+    )
 
 
 class ModelLibrary:

@@ -23,6 +23,7 @@ from holostudio.hud.camera_preview import prepare_preview
 from holostudio.hud.view import HudView
 from holostudio.hud.widgets import Widget, build_hud, over_hud, press_target
 from holostudio.interaction.manipulator import GestureManipulator, ViewQueries
+from holostudio.interaction.pinch_tap import PinchTaps
 from holostudio.interaction.pointer import HandPointer
 from holostudio.rendering.scene_view import SceneView
 from holostudio.tracking.worker import TrackingWorker
@@ -43,7 +44,6 @@ KEY_EVENTS = (
     "control-z",
     "control-y",
     "control-shift-z",
-    "enter",
 )
 
 
@@ -88,9 +88,6 @@ class StudioApp(ShowBase):
             calibrated=load_calibrated(data_dir / "settings.json"),
             pick_file=pick_file,
             on_camera_start=self.tracking.start,
-            on_designer_request=self.tracking.request_designer,
-            on_designer_confirm=self.tracking.confirm_designer,
-            on_designer_cancel=self.tracking.cancel_designer,
             clock=clock,
         )
 
@@ -110,8 +107,7 @@ class StudioApp(ShowBase):
             clock=clock,
         )
         self._last_preview_index = -1
-        self._designer_locked = False
-        self._designer_status = "unset"
+        self.pinch_taps = PinchTaps()
 
         self.accept("mouse1", self._on_click)
         self.accept("window-event", self._on_window_event)
@@ -141,10 +137,9 @@ class StudioApp(ShowBase):
         return (point[0] * width, point[1] * height)
 
     def _pointer_target(self, point) -> str | None:
-        """The button the hand pointer may press here (hands are limited until a
-        designer is locked; the mouse is never limited)."""
+        """The button the hand pointer may press here."""
         target = press_target(self.widgets, self._to_pixels(point))
-        if target and self.controller.hand_may_press(target, self._designer_status):
+        if target and self.controller.hand_may_press(target):
             return target
         return None
 
@@ -177,14 +172,7 @@ class StudioApp(ShowBase):
         """One frame of the whole pipeline (also used by tests and tools)."""
         controller = self.controller
         tracking = self.tracking.state
-        self._designer_locked = tracking.designer.locked
-        self._designer_status = tracking.designer.status
-        # Only the designer's hands control the app once a designer is locked, and only
-        # the recorded person's hands can confirm them. Before that, hands may still
-        # drive calibration and press the designer button.
-        mine_only = self._designer_locked or tracking.designer.pending
-        controlling = tracking.designer_only() if mine_only else tracking
-        gestures = self.gestures.update(controlling)
+        gestures = self.gestures.update(tracking)
         controller.update_inputs(tracking, gestures)
 
         width, height = self._size()
@@ -194,15 +182,26 @@ class StudioApp(ShowBase):
         if pointer_frame.pressed:
             controller.press(pointer_frame.pressed)
 
-        if controller.calibration.open or not self._designer_locked:
+        if controller.calibration.open:
             self.manipulator.reset()
+            self.pinch_taps.reset()
+        elif controller.grouping:
+            # Picking objects to join: each pinch on an object toggles it.
+            self.manipulator.reset()
+            for point in self.pinch_taps.update(gestures):
+                if not self._over_hud(point):
+                    object_id = self.scene_view.pick(point)
+                    if object_id is not None:
+                        controller.toggle_group_pick(object_id)
         else:
+            self.pinch_taps.update(gestures)
             self.manipulator.update(gestures, controller.scene)
 
         controller.tick()
         # Rebuild after presses so the HUD shows their effect in the same frame.
         self.widgets = build_hud(controller.hud_context(width, height, tracking, gestures))
-        self.scene_view.sync(controller.scene)
+        marked = frozenset(controller.group_picks) if controller.grouping else frozenset()
+        self.scene_view.sync(controller.scene, marked)
         self.hud.render_widgets(self.widgets, width, height)
         self.hud.render_pointer(pointer_frame, width, height)
         self._update_preview(tracking)
@@ -217,16 +216,8 @@ class StudioApp(ShowBase):
             return
         self._last_preview_index = frame.index
         hands = tracking.frame.hands if tracking.status == "tracking" else ()
-        designer = tracking.designer
         self.hud.update_camera(
-            prepare_preview(
-                frame.image,
-                hands,
-                self.hud.camera_aspect,
-                designer_face=designer.face,
-                other_faces=designer.other_faces,
-                candidate=designer.pending,
-            )
+            prepare_preview(frame.image, hands, self.hud.camera_aspect, tracking.frame.other_hands)
         )
 
     def _frame(self, task):

@@ -1,6 +1,7 @@
 """Runs the whole app headless in its own process (Panda3D allows one window per process)."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,8 @@ def test_scripted_hand_drives_the_whole_pipeline():
         capture_output=True,
         text=True,
         encoding="utf-8",
+        # Windows pipes default to the ANSI code page; the check names are Vietnamese.
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         timeout=180,
     )
     start = completed.stdout.index("{")

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .state import SceneObject, SceneState, clamp_scale, create_initial_scene
 
-OBJECT_KINDS = {"box", "sphere", "cylinder", "model"}
+OBJECT_KINDS = {"box", "sphere", "cylinder", "model", "group"}
 
 
 def _vector(value) -> tuple[float, float, float] | None:
@@ -33,6 +33,10 @@ def _parse_object(raw) -> SceneObject | None:
     scale = raw.get("scale")
     kind = raw.get("kind")
     asset_id = raw.get("asset_id")
+    raw_children = raw.get("children", [])
+    children = (
+        [_parse_object(child) for child in raw_children] if isinstance(raw_children, list) else None
+    )
     valid = (
         isinstance(raw.get("id"), str)
         and isinstance(raw.get("name"), str)
@@ -44,6 +48,9 @@ def _parse_object(raw) -> SceneObject | None:
         and not isinstance(scale, bool)
         and math.isfinite(scale)
         and (kind != "model" or isinstance(asset_id, str))
+        and children is not None
+        and all(child is not None for child in children)
+        and (kind != "group" or len(children) >= 1)
     )
     if not valid:
         return None
@@ -56,6 +63,7 @@ def _parse_object(raw) -> SceneObject | None:
         rotation=rotation,
         scale=clamp_scale(float(scale)),
         asset_id=asset_id if kind == "model" else None,
+        children=tuple(children) if kind == "group" else (),
     )
 
 
@@ -74,25 +82,27 @@ def load_scene(path: Path) -> SceneState:
         return create_initial_scene()
 
 
+def _serialize(obj: SceneObject) -> dict:
+    data = {
+        "id": obj.id,
+        "name": obj.name,
+        "kind": obj.kind,
+        "color": obj.color,
+        "position": list(obj.position),
+        "rotation": list(obj.rotation),
+        "scale": obj.scale,
+    }
+    if obj.asset_id:
+        data["asset_id"] = obj.asset_id
+    if obj.children:
+        data["children"] = [_serialize(child) for child in obj.children]
+    return data
+
+
 def save_scene(scene: SceneState, path: Path) -> None:
     """Writes atomically so a crash never leaves a half-written scene file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "version": 1,
-        "objects": [
-            {
-                "id": obj.id,
-                "name": obj.name,
-                "kind": obj.kind,
-                "color": obj.color,
-                "position": list(obj.position),
-                "rotation": list(obj.rotation),
-                "scale": obj.scale,
-                **({"asset_id": obj.asset_id} if obj.asset_id else {}),
-            }
-            for obj in scene.objects
-        ],
-    }
+    payload = {"version": 1, "objects": [_serialize(obj) for obj in scene.objects]}
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, path)

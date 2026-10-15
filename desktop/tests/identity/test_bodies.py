@@ -1,16 +1,10 @@
-import numpy as np
 import pytest
 
 from holostudio import config
-from holostudio.identity.bodies import Body, PoseDetector, face_owner, hand_owner
-from holostudio.identity.faces import Face, FaceIdentifier
+from holostudio.identity.bodies import Body, PoseDetector, hand_owner
 from holostudio.tracking.types import Landmark
 
 ASSETS = config.DATA_DIR / "test-assets"
-
-
-def face(x, y, w, h):
-    return Face(x, y, w, h, 0.9, np.zeros(15, np.float32))
 
 
 def hand_at(x, y):
@@ -21,12 +15,6 @@ ALICE = Body(nose=(0.3, 0.3), wrists=((0.2, 0.7), (0.4, 0.7)))
 BOB = Body(nose=(0.75, 0.35), wrists=((0.65, 0.75), (0.85, 0.75)))
 
 
-def test_a_face_belongs_to_the_body_whose_nose_is_inside_it():
-    assert face_owner([ALICE, BOB], face(0.25, 0.22, 0.1, 0.14)) == 0
-    assert face_owner([ALICE, BOB], face(0.7, 0.27, 0.1, 0.14)) == 1
-    assert face_owner([ALICE, BOB], face(0.45, 0.05, 0.05, 0.05)) is None
-
-
 def test_a_hand_belongs_to_the_body_with_a_wrist_next_to_it():
     assert hand_owner([ALICE, BOB], hand_at(0.41, 0.69)) == 0
     assert hand_owner([ALICE, BOB], hand_at(0.66, 0.76)) == 1
@@ -35,29 +23,9 @@ def test_a_hand_belongs_to_the_body_with_a_wrist_next_to_it():
 
 
 needs_models = pytest.mark.skipif(
-    not (
-        config.POSE_LANDMARKER_FILE.exists()
-        and config.FACE_DETECTOR_FILE.exists()
-        and (ASSETS / "messi5.jpg").exists()
-    ),
-    reason="pose/face models or test image not downloaded",
+    not (config.POSE_LANDMARKER_FILE.exists() and (ASSETS / "messi5.jpg").exists()),
+    reason="pose model or test image not downloaded",
 )
-
-
-@needs_models
-def test_real_pose_links_the_detected_face_to_its_body():
-    import cv2
-
-    image = cv2.imread(str(ASSETS / "messi5.jpg"))
-    detector = PoseDetector(config.POSE_LANDMARKER_FILE)
-    try:
-        bodies = detector.detect(image, 0.0)
-    finally:
-        detector.close()
-    faces = FaceIdentifier(config.FACE_DETECTOR_FILE, config.FACE_RECOGNIZER_FILE).detect(image)
-
-    assert len(bodies) >= 1
-    assert face_owner(bodies, faces[0]) is not None
 
 
 @needs_models

@@ -132,3 +132,57 @@ def test_camera_axes_are_the_screen_right_and_up_directions(view, base):
     centre = screen_point_of(base, (0, 0, 0))
     assert screen_point_of(base, tuple(right))[0] > centre[0]
     assert screen_point_of(base, tuple(up))[1] < centre[1]
+
+
+def test_a_group_is_drawn_from_its_parts_and_picked_as_one(view, base):
+    from holostudio.scene.state import GroupObjects
+
+    scene = reduce_scene(create_initial_scene(), GroupObjects(("box-1", "sphere-1"), "g1"))
+    view.sync(scene)
+    base.graphicsEngine.renderFrame()
+
+    assert view.node_of("box-1") is None  # parts are inside the group's node
+    group = view.node_of("g1")
+    assert group.findAllMatches("**/part-*").getNumPaths() == 2
+    # Touching either part picks the group.
+    assert view.pick(screen_point_of(base, (-2.2, 0, 0))) == "g1"
+    assert view.pick(screen_point_of(base, (0, 0, 0))) == "g1"
+    assert view.pick(screen_point_of(base, (2.2, 0, 0))) == "cylinder-1"
+
+    # The box part is drawn where it was before grouping.
+    from panda3d.core import Point3
+
+    part = group.find("**/part-box-1")
+    centre = panda_to_scene(base.render.getRelativePoint(part, Point3(0, 0, 0)))
+    assert centre == pytest.approx((-2.2, 0, 0), abs=1e-5)
+
+
+def test_the_group_outline_wraps_all_parts(view):
+    from holostudio.scene.state import GroupObjects
+
+    scene = reduce_scene(create_initial_scene(), GroupObjects(("box-1", "sphere-1"), "g1"))
+    scene = reduce_scene(scene, Select("g1"))
+    view.sync(scene)
+    outline = view.node_of("g1").find("selection-outline")
+    low, high = outline.getTightBounds(view.node_of("g1"))
+    assert not outline.isHidden()
+    assert (high - low).x > 3.0  # spans both the box and the sphere
+
+
+def test_objects_picked_for_grouping_get_an_amber_outline(view):
+    view.sync(create_initial_scene(), marked=frozenset({"sphere-1"}))
+    outline = view.node_of("sphere-1").find("selection-outline")
+    assert not outline.isHidden()
+    assert outline.getColor()[2] < 0.5  # amber, not the cyan selection colour
+    assert view.node_of("box-1").find("selection-outline").isHidden()
+
+
+def test_ungrouping_redraws_the_parts_as_separate_objects(view):
+    from holostudio.scene.state import GroupObjects, UngroupObject
+
+    scene = reduce_scene(create_initial_scene(), GroupObjects(("box-1", "sphere-1"), "g1"))
+    view.sync(scene)
+    scene = reduce_scene(scene, UngroupObject("g1"))
+    view.sync(scene)
+    assert view.node_of("g1") is None
+    assert view.node_of("box-1") is not None and view.node_of("sphere-1") is not None

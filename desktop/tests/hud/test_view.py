@@ -74,7 +74,8 @@ def test_every_hud_character_exists_in_the_font(hud):
         HudContext(1280, 720, panel="add", library=library, toast="Đã xóa “Khối cầu”"),
         HudContext(1280, 720, panel="guide", guide_rows=rows, collapsed=False),
         HudContext(1280, 720, collapsed=True, camera_busy=True),
-        HudContext(1280, 720, designer_status="pending", designer_message="Chờ xác nhận"),
+        HudContext(1280, 720, panel="group", grouping=True, group_count=1),
+        HudContext(1280, 720, panel="group", grouping=True, group_count=3),
     ]
     for step in range(5):
         view = describe(step, CalibrationInputs(step % 2 == 0, False, True, step > 2))
@@ -104,25 +105,11 @@ def test_hud_changes_keep_the_camera_image_and_unchanged_widgets(hud, base):
     assert hud._nodes["menu.add"][1] is menu_node
 
 
-def test_preview_draws_a_box_around_the_designers_face():
-    from holostudio.tracking.types import FaceBox
-
+def test_hands_of_other_people_are_drawn_grey():
     image = np.zeros((360, 640, 3), np.uint8)
-    preview = prepare_preview(image, (), 16 / 9, designer_face=FaceBox(0.2, 0.2, 0.2, 0.3))
-    green = (preview[:, :, 1] > 200) & (preview[:, :, 2] < 160)
-    ys, xs = np.nonzero(green)
-    # Mirrored: a face on the camera's left (x 0.2-0.4) shows on the right (x 0.6-0.8).
-    assert 0.55 * 640 < xs.min() < 0.65 * 640
-    assert 0.75 * 640 < xs.max() < 0.85 * 640
-    assert 0.15 * 360 < ys.min() < 0.25 * 360
-
-
-def test_a_recorded_face_waiting_for_confirmation_gets_an_amber_box():
-    from holostudio.tracking.types import FaceBox
-
-    image = np.zeros((360, 640, 3), np.uint8)
-    box = FaceBox(0.2, 0.2, 0.2, 0.3)
-    amber = prepare_preview(image, (), 16 / 9, designer_face=box, candidate=True)
-    green = prepare_preview(image, (), 16 / 9, designer_face=box)
-    assert (amber[:, :, 2] > 200).any()  # red channel lit: amber
-    assert not (green[:, :, 2] > 200).any()
+    hand = tuple(Landmark(0.25, 0.5, 0) for _ in range(21))
+    other = tuple(Landmark(0.75, 0.5, 0) for _ in range(21))
+    preview = prepare_preview(image, (hand,), 16 / 9, other_hands=(other,))
+    user_pixel, other_pixel = preview[180, 479], preview[180, 160]
+    assert user_pixel[1] > 200 and user_pixel[0] != user_pixel[1]  # coloured
+    assert other_pixel[0] == other_pixel[1] == other_pixel[2] > 0  # grey

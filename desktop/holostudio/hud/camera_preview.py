@@ -5,7 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from holostudio.tracking.types import FaceBox, Hand, Landmark
+from holostudio.tracking.types import Hand
 
 HAND_CONNECTIONS = (
     (0, 1), (1, 2), (2, 3), (3, 4),
@@ -18,9 +18,7 @@ HAND_CONNECTIONS = (
 
 LINE_COLOR = (255, 231, 106)  # BGR
 POINT_COLOR = (185, 255, 125)
-DESIGNER_COLOR = (125, 255, 125)  # BGR green
-CANDIDATE_COLOR = (60, 220, 255)  # BGR amber: recorded, waiting for confirmation
-OTHER_FACE_COLOR = (140, 140, 140)
+IGNORED_COLOR = (130, 130, 130)  # hands of people farther away than the user
 
 
 def crop_to_aspect(image: np.ndarray, aspect: float) -> tuple[np.ndarray, tuple[float, float]]:
@@ -39,9 +37,7 @@ def prepare_preview(
     image_bgr: np.ndarray,
     hands: tuple[Hand, ...],
     aspect: float,
-    designer_face: FaceBox | None = None,
-    other_faces: tuple[FaceBox, ...] = (),
-    candidate: bool = False,
+    other_hands: tuple[Hand, ...] = (),
 ) -> np.ndarray:
     """Mirrored, cropped preview with the hand skeleton drawn on it (BGR, top row first)."""
     full_height, full_width = image_bgr.shape[:2]
@@ -54,27 +50,20 @@ def prepare_preview(
         y = (point.y - offset_y) * full_height
         return (int(round(width - 1 - x)), int(round(y)))
 
-    def face_rect(face: FaceBox) -> tuple[tuple[int, int], tuple[int, int]]:
-        # Mirrored: the face's right edge in the camera image is on the left on screen.
-        top_left = to_pixel(Landmark(face.x + face.w, face.y, 0))
-        bottom_right = to_pixel(Landmark(face.x, face.y + face.h, 0))
-        return top_left, bottom_right
-
-    for face in other_faces:
-        cv2.rectangle(preview, *face_rect(face), OTHER_FACE_COLOR, 1, cv2.LINE_AA)
-    if designer_face is not None:
-        color = CANDIDATE_COLOR if candidate else DESIGNER_COLOR
-        cv2.rectangle(preview, *face_rect(designer_face), color, 2, cv2.LINE_AA)
-
-    for hand in hands:
+    def draw(hand: Hand, line_color, point_color) -> None:
         if len(hand) < 21:
-            continue
+            return
         for start, end in HAND_CONNECTIONS:
             cv2.line(
-                preview, to_pixel(hand[start]), to_pixel(hand[end]), LINE_COLOR, 2, cv2.LINE_AA
+                preview, to_pixel(hand[start]), to_pixel(hand[end]), line_color, 2, cv2.LINE_AA
             )
         for index, point in enumerate(hand):
             cv2.circle(
-                preview, to_pixel(point), 4 if index == 0 else 3, POINT_COLOR, -1, cv2.LINE_AA
+                preview, to_pixel(point), 4 if index == 0 else 3, point_color, -1, cv2.LINE_AA
             )
+
+    for hand in other_hands:
+        draw(hand, IGNORED_COLOR, IGNORED_COLOR)
+    for hand in hands:
+        draw(hand, LINE_COLOR, POINT_COLOR)
     return preview

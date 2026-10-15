@@ -1,1 +1,1 @@
-"""Stage 2b - who is who: faces, bodies, and which hands belong to the designer."""
+"""Stage 2b - which person each hand belongs to (body pose), to follow the nearest user."""
