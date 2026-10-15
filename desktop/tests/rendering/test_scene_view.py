@@ -186,3 +186,34 @@ def test_ungrouping_redraws_the_parts_as_separate_objects(view):
     view.sync(scene)
     assert view.node_of("g1") is None
     assert view.node_of("box-1") is not None and view.node_of("sphere-1") is not None
+
+
+def test_the_virtual_hand_lands_under_the_real_hand_on_screen(view, base):
+    from holostudio.avatar.pose import solve
+    from holostudio.avatar.profile import HandProfile, bone_lengths
+    from holostudio.gestures.engine import TrackedHand
+    from holostudio.interaction.coordinates import landmark_to_screen
+
+    from ..avatar.test_depth import ASPECT, WORLD, project
+
+    landmarks = project(WORLD, (0.6, 0.45), 2.5)
+    hand = TrackedHand(1, landmarks, WORLD, "point", ASPECT)
+    virtual = solve(hand, HandProfile(bone_lengths(WORLD), 2.5), view.view_rig())
+    for joint, landmark in zip(virtual.joints, landmarks, strict=True):
+        assert screen_point_of(base, joint) == pytest.approx(landmark_to_screen(landmark), abs=1e-3)
+
+
+def test_touch_finds_the_object_whose_surface_is_within_reach(view):
+    scene = create_initial_scene()
+    view.sync(scene)
+    target = scene.objects[0]
+    centre = np.array(target.position)
+    assert view.touch(centre, 0.01) == target.id  # inside the body
+    far = centre + [0, 30, 0]
+    assert view.touch(far, 0.5) is None
+    # Walk outward until the point leaves the body: then only a long enough reach touches it.
+    step = centre.copy()
+    while view.touch(step, 0.0) == target.id:
+        step = step + [0, 0.02, 0]
+    assert view.touch(step + [0, 0.3, 0], 0.2) is None
+    assert view.touch(step + [0, 0.3, 0], 0.4) == target.id

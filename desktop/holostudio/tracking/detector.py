@@ -46,7 +46,18 @@ class HandDetector:
         handedness = tuple(
             (categories[0].category_name if categories else "") for categories in result.handedness
         )
-        return HandFrame(hands=hands, handedness=handedness, timestamp=timestamp)
+        world_hands = tuple(
+            tuple(Landmark(point.x, point.y, point.z) for point in hand)
+            for hand in result.hand_world_landmarks
+        )
+        height, width = image_bgr.shape[:2]
+        return HandFrame(
+            hands=hands,
+            handedness=handedness,
+            timestamp=timestamp,
+            world_hands=world_hands,
+            aspect=width / height,
+        )
 
     def close(self) -> None:
         self._landmarker.close()

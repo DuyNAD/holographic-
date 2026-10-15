@@ -1,6 +1,8 @@
 """Moves, rotates, and scales scene objects from stable hand gestures.
 
-- Pinch one hand on an object: drag it.
+- Pinch one hand on an object: drag it. With the virtual hand, the pinch must touch
+  the object in 3D (between thumb tip and index tip) and the drag follows the hand in
+  depth too; without it, the pinch picks what is under the finger on screen.
 - Fist one hand on an object (it holds it), then swipe the other hand with an open
   palm: the object turns in the direction of the swipe, around the screen's axes.
 - Pinch both hands: scale the selected object.
@@ -13,11 +15,12 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 
 import numpy as np
 
+from holostudio.avatar.pose import VirtualHand
 from holostudio.gestures.engine import StableGesture
 from holostudio.scene.history import BeginInteraction, EndInteraction, HistoryAction
 from holostudio.scene.rotation import turn_in_world
@@ -35,6 +38,8 @@ SWIPE_DEAD_ZONE = 0.004
 # A holding fist may be lost this long (motion blur, a missed frame) without letting go.
 HOLD_GRACE_SECONDS = 0.3
 PALM_POINTS = (0, 5, 9, 13, 17)
+# How close (metres of real hand) the pinch point must come to an object's surface.
+GRAB_REACH = 0.02
 
 
 @dataclass
@@ -45,6 +50,8 @@ class ViewQueries:
     ray: Callable[[ScreenPoint], Ray]
     over_hud: Callable[[ScreenPoint], bool]
     axes: Callable[[], Axes]
+    # The object within a distance of a scene point (the virtual hand's touch).
+    touch: Callable[[np.ndarray, float], str | None] = field(default=lambda _point, _reach: None)
 
 
 def intersect_depth_plane(ray: Ray, depth: float) -> np.ndarray | None:
@@ -56,6 +63,21 @@ def intersect_depth_plane(ray: Ray, depth: float) -> np.ndarray | None:
     if t < 0:
         return None
     return origin + direction * t
+
+
+def grab_point(hand: VirtualHand) -> np.ndarray:
+    """Between the thumb tip and the index tip: where a pinch holds things."""
+    return (hand.joints[4] + hand.joints[8]) / 2
+
+
+def hand_anchor(hand: VirtualHand) -> np.ndarray:
+    """The palm centre: a held object follows it, so opening the fingers to let go
+    does not pull the object along."""
+    return hand.joints[list(PALM_POINTS)].mean(axis=0)
+
+
+def grab_reach(hand: VirtualHand) -> float:
+    return GRAB_REACH * hand.units_per_metre
 
 
 def palm_centre(gesture: StableGesture) -> ScreenPoint:
@@ -100,6 +122,8 @@ class GestureManipulator:
         self._swipe_hand: int | None = None
         self._swipe_anchor: ScreenPoint | None = None
         self._active = False
+        self._hands3d: Mapping[int, VirtualHand] = {}
+        self._drag_3d = False
 
     @property
     def active(self) -> bool:
@@ -129,8 +153,20 @@ class GestureManipulator:
         self._scale_hands = None
         self._swipe_hand = None
         self._swipe_anchor = None
+        self._drag_3d = False
 
-    def update(self, gestures: tuple[StableGesture, ...], scene: SceneState) -> None:
+    @property
+    def dragging_hand(self) -> int | None:
+        return self._hand_id if self._mode == "drag" else None
+
+    def update(
+        self,
+        gestures: tuple[StableGesture, ...],
+        scene: SceneState,
+        hands3d: Mapping[int, VirtualHand] | None = None,
+    ) -> None:
+        """`hands3d`: the virtual hands by track id (empty when there are none)."""
+        self._hands3d = hands3d or {}
         now = self._clock()
         by_hand = {g.track_id: g for g in gestures}
         pinches = sorted((g for g in gestures if g.name == "pinch"), key=lambda g: g.track_id)
@@ -179,6 +215,9 @@ class GestureManipulator:
         # A pinch over a menu or panel must not grab the object behind it.
         if self._view.over_hud(point):
             return False
+        hand = self._hands3d.get(gesture.track_id)
+        if hand is not None:
+            return self._start_touch_drag(gesture, hand, scene)
         target = scene.find(self._view.pick(point))
         if target is None:
             return False
@@ -194,6 +233,19 @@ class GestureManipulator:
                 depth,
             ]
         )
+        return True
+
+    def _start_touch_drag(
+        self, gesture: StableGesture, hand: VirtualHand, scene: SceneState
+    ) -> bool:
+        grab = grab_point(hand)
+        target = scene.find(self._view.touch(grab, grab_reach(hand)))
+        if target is None:
+            return False
+        self._mode, self._hand_id, self._drag_3d = "drag", gesture.track_id, True
+        self._dispatch(Select(target.id))
+        self._begin()
+        self._drag_offset = np.array(target.position, dtype=float) - hand_anchor(hand)
         return True
 
     def _start_hold(self, gesture: StableGesture, scene: SceneState, now: float) -> bool:
@@ -241,6 +293,12 @@ class GestureManipulator:
         self._dispatch(SetScale(start_scale * distance / start_distance))
 
     def _drag(self, gesture: StableGesture) -> None:
+        if self._drag_3d:
+            hand = self._hands3d.get(gesture.track_id)
+            if hand is not None:  # a frame without 3D landmarks just keeps the object
+                position = hand_anchor(hand) + self._drag_offset
+                self._dispatch(SetPosition(tuple(float(v) for v in position)))
+            return
         depth = float(self._drag_offset[2])
         hit = intersect_depth_plane(self._view.ray(landmark_to_screen(gesture.index_tip)), depth)
         if hit is not None:

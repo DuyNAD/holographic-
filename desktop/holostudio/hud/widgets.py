@@ -60,11 +60,17 @@ class HudContext:
     width: int
     height: int
     collapsed: bool = False
-    panel: Literal["add", "guide", "group"] | None = None
+    panel: Literal["add", "guide", "group", "scan"] | None = None
     selected_name: str | None = None
     selected_is_group: bool = False
     grouping: bool = False  # picking objects to join into one group
     group_count: int = 0
+    # Hand scan for the virtual hand: on while the scan panel is open.
+    scanning: bool = False
+    scan_message: str = ""
+    scan_progress: float = 0.0
+    scan_done: bool = False
+    hand_scanned: bool = False  # a scanned hand is in use
     gesture_label: str = "Chưa nhận diện"
     confidence: float = 0.0
     camera_badge: str = "Đang tắt"
@@ -210,6 +216,7 @@ def _menu(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
             ("menu.delete", "×\nXóa", "danger", ctx.selected_name is not None, False),
             ("menu.group", "Ghép\nkhối", "button", True, ctx.grouping),
             ("menu.ungroup", "Tách\nkhối", "button", ctx.selected_is_group, False),
+            ("menu.scan", "Quét\ntay", "button", True, ctx.panel == "scan"),
             ("menu.guide", "?\nHướng dẫn", "button", True, ctx.panel == "guide"),
         ]
 
@@ -245,6 +252,11 @@ def _menu(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
 
     content: list[tuple] = []
     height = _panel_content(content, ctx, u, width, narrow)
+    if height > max_h and ctx.panel == "guide" and not narrow:
+        # Not enough room: drop the keyboard shortcuts (they are in the README) so
+        # every gesture and the recalibrate button stay visible.
+        content = []
+        height = _panel_content(content, ctx, u, width, narrow, shortcuts=False)
     height = min(height, max_h)
     if narrow:
         panel = Rect(panel.x, panel.y - height, width, height)
@@ -259,12 +271,19 @@ def _menu(b: _Builder, ctx: HudContext, u: float, narrow: bool) -> None:
 
 
 def _panel_content(
-    content: list, ctx: HudContext, u: float, width: float, narrow: bool = False
+    content: list,
+    ctx: HudContext,
+    u: float,
+    width: float,
+    narrow: bool = False,
+    shortcuts: bool = True,
 ) -> float:
     """Appends (id, kind, relative rect, text, extra) and returns the content height."""
     pad = 0.9 * u
     inner = width - 2 * pad
-    title = {"add": "Thêm vật thể", "group": "Ghép khối"}.get(ctx.panel, "Hướng dẫn")
+    title = {"add": "Thêm vật thể", "group": "Ghép khối", "scan": "Quét bàn tay"}.get(
+        ctx.panel, "Hướng dẫn"
+    )
     content.append(("panel.title", "title", (pad, 0, inner, 3 * u), title, {}))
     content.append(
         ("panel.close", "button", (width - pad - 2.2 * u, 0.4 * u, 2.2 * u, 2.2 * u), "×", {})
@@ -399,6 +418,33 @@ def _panel_content(
         y += 3.2 * u
         content.append(("group.cancel", "tile", (pad, y, inner, 2.6 * u), "Hủy", {}))
         y += 3.0 * u
+    elif ctx.panel == "scan":
+        help_text = (
+            "Bàn tay 3D đã sẵn sàng: đưa tay tới vật, chụm khi chạm để cầm và kéo xa gần."
+            if ctx.scan_done
+            else "Đưa một bàn tay vào khung trên camera, xòe thẳng các ngón và giữ yên."
+        )
+        content.append(("scan.help", "label", (pad, y, inner, 3.4 * u), help_text, {"size": 0.75}))
+        y += 3.8 * u
+        content.append(
+            ("scan.status", "title", (pad, y, inner, 2.4 * u), ctx.scan_message, {"size": 0.95})
+        )
+        y += 2.8 * u
+        content.append(
+            ("scan.progress", "meter", (pad, y, inner, 0.5 * u), "", {"value": ctx.scan_progress})
+        )
+        y += 1.3 * u
+        if ctx.scan_done:
+            content.append(("scan.done", "button", (pad, y, inner, 2.8 * u), "Xong", {}))
+            y += 3.2 * u
+        else:
+            content.append(("scan.cancel", "tile", (pad, y, inner, 2.6 * u), "Hủy", {}))
+            y += 3.0 * u
+        if ctx.hand_scanned:
+            content.append(
+                ("scan.off", "tile", (pad, y, inner, 2.6 * u), "Tắt tay 3D, dùng con trỏ", {})
+            )
+            y += 3.0 * u
     else:
         section("Cử chỉ tay")
         for name, instruction, action in ctx.guide_rows:
@@ -436,7 +482,7 @@ def _panel_content(
             )
             y += 3.8 * u
         # Small windows keep the gestures and the button; the shortcuts are in the README.
-        if not narrow:
+        if shortcuts and not narrow:
             section("Chuột và bàn phím")
             for action, keys in SHORTCUTS:
                 content.append(

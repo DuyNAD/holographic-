@@ -244,3 +244,60 @@ def test_a_fist_with_nothing_selected_holds_the_object_under_the_palm():
     empty.frame(gesture("fist"))
     assert empty.manipulator.mode is None
     assert empty.actions == []
+
+
+# --- virtual hand: real touch in 3D -------------------------------------------
+
+
+def virtual_hand(grab, track_id=1, k=10.0):
+    """A virtual hand whose thumb and index tips meet at `grab` (scene coordinates)."""
+    from holostudio.avatar.pose import VirtualHand
+
+    joints = np.tile(np.asarray(grab, dtype=float), (21, 1))
+    joints[4] -= [0.05, 0, 0]
+    joints[8] += [0.05, 0, 0]
+    return VirtualHand(track_id, "pinch", joints, k, 1.0)
+
+
+class TouchHarness(Harness):
+    """Objects are unit spheres; touching means the pinch point is within reach."""
+
+    def __init__(self):
+        super().__init__(pick=lambda _p: None)  # the screen ray never decides here
+        self.reaches = []
+
+        def touch(point, reach):
+            self.reaches.append(reach)
+            box = self.history.present.find("box-1")
+            gap = np.linalg.norm(np.asarray(point) - box.position) - 1.0
+            return "box-1" if gap <= reach else None
+
+        self.manipulator._view.touch = touch
+
+    def frame3d(self, grab, name="pinch"):
+        self.now += 1 / 30
+        g = gesture(name, project(grab))
+        self.manipulator.update((g,), self.history.present, {g.track_id: virtual_hand(grab)})
+
+
+def test_a_pinch_that_touches_the_object_grabs_it_and_moves_it_in_depth():
+    h = TouchHarness()
+    origin = np.array(h.box.position)
+    start = origin + [0, 0, 1.1]  # just in front of the surface
+    h.frame3d(start)
+    assert h.box.id == h.history.present.selected_id
+    assert h.reaches[-1] == pytest.approx(0.2)  # 2 cm of real hand at 10 units per metre
+
+    h.frame3d(start + [0.5, 0.2, 1.5])  # the hand comes toward the viewer
+    assert h.box.position == pytest.approx(origin + [0.5, 0.2, 1.5], abs=1e-6)
+
+    h.frame3d(start, name="open-palm")
+    assert isinstance(h.actions[-1], EndInteraction)
+
+
+def test_a_pinch_in_the_air_in_front_of_the_object_grabs_nothing():
+    h = TouchHarness()
+    # Same spot on screen as the object, but far in front of it.
+    h.frame3d(np.array(h.box.position) + [0, 0, 4.0])
+    assert h.actions == []
+    assert h.manipulator.dragging_hand is None

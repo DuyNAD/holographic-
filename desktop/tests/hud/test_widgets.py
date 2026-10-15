@@ -151,3 +151,13 @@ def test_the_grouping_panel_counts_picks_and_fits(size):
     for widget in three.values():
         r = widget.rect
         assert r.x + r.w <= size[0] + 1e-6 and r.y + r.h <= size[1] + 1e-6, widget.id
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_the_scan_panel_fits_and_the_dock_has_the_scan_button(size):
+    scanning = ids(
+        build_hud(HudContext(*size, panel="scan", scanning=True, scan_message="Giữ yên tay…"))
+    )
+    assert {"menu.scan", "scan.status", "scan.progress", "scan.cancel"} <= scanning
+    done = ids(build_hud(HudContext(*size, panel="scan", scan_done=True, hand_scanned=True)))
+    assert {"scan.done", "scan.off"} <= done and "scan.cancel" not in done

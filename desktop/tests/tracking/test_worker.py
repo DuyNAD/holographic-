@@ -165,3 +165,25 @@ def test_hand_tracking_still_works_if_the_pose_model_fails():
         assert len(worker.state.frame.hands) == 2  # no filter: every hand is used
     finally:
         worker.stop()
+
+
+class TwoHandsWithWorld(TwoHands):
+    def detect(self, image, timestamp):
+        frame = super().detect(image, timestamp)
+        near = tuple(Landmark(0.01, 0.02, 0.0) for _ in range(21))
+        far = tuple(Landmark(0.03, 0.04, 0.0) for _ in range(21))
+        return HandFrame(frame.hands, frame.handedness, timestamp, world_hands=(near, far))
+
+
+def test_world_landmarks_follow_the_hands_that_are_kept():
+    camera = FakeCamera()
+    worker = TrackingWorker(camera, TwoHandsWithWorld, FirstHandOnly)
+    worker.start()
+    try:
+        push(camera, 2, 1)
+        assert wait_for(lambda: worker.state.status == "tracking")
+        assert worker.state.frame.world_hands == (
+            tuple(Landmark(0.01, 0.02, 0.0) for _ in range(21)),
+        )
+    finally:
+        worker.stop()

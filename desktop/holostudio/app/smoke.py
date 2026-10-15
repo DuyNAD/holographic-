@@ -43,11 +43,35 @@ def make_hand(gesture: str, screen_x: float, screen_y: float) -> tuple[Landmark,
     return tuple(Landmark(p.x + dx, p.y + dy, p.z) for p in hand)
 
 
+# Image heights per metre of the scripted hands at the scanned distance.
+SCRIPTED_SCALE = 3.0
+ASPECT = 16 / 9
+
+
+def world_of(hand: tuple[Landmark, ...]) -> tuple[Landmark, ...]:
+    """A flat 3D shape in metres that matches the scripted image hand."""
+    wrist = hand[0]
+    return tuple(
+        Landmark((p.x - wrist.x) * ASPECT / SCRIPTED_SCALE, (p.y - wrist.y) / SCRIPTED_SCALE, 0.0)
+        for p in hand
+    )
+
+
+def at_distance(hand: tuple[Landmark, ...], distance: float) -> tuple[Landmark, ...]:
+    """The same hand `distance` times as far from the webcam: smaller around the fingertip."""
+    tip = hand[8]
+    return tuple(
+        Landmark(tip.x + (p.x - tip.x) / distance, tip.y + (p.y - tip.y) / distance, p.z)
+        for p in hand
+    )
+
+
 class ScriptedTracking:
     """Stands in for TrackingWorker; the script sets the current hands."""
 
     def __init__(self) -> None:
         self.hands: tuple = ()
+        self.world_hands: tuple = ()  # 3D shapes (metres), only when the script sets them
         self.other_hands: tuple = ()  # someone farther away (set aside by the filter)
         self.timestamp = 0.0
         self.started = False
@@ -61,7 +85,12 @@ class ScriptedTracking:
                 HandFrame(other_hands=self.other_hands, timestamp=self.timestamp),
             )
         frame = HandFrame(
-            self.hands, ("Right",) * len(self.hands), self.timestamp, self.other_hands
+            self.hands,
+            ("Right",) * len(self.hands),
+            self.timestamp,
+            self.other_hands,
+            self.world_hands,
+            ASPECT,
         )
         return TrackingState("tracking", f"Đã nhận diện {len(self.hands)}/2 bàn tay.", frame)
 
@@ -142,6 +171,21 @@ def run(screenshot: Path | None = None) -> dict:
     checks: dict[str, bool] = {}
 
     frames(3)
+    # First start: no scanned hand yet, so the scan panel asks for one.
+    checks["the first start asks to scan the hand"] = controller.scanning
+    scan_hand = make_hand("open-palm", 0.55, 0.25)
+    tracking.world_hands = (world_of(scan_hand),)
+    frames(40, (at_distance(scan_hand, 1.3),))  # open palm held still in the box
+    tracking.world_hands = ()
+    frames(3)
+    scanned = controller.profile
+    checks["an open palm held in the box is scanned and saved"] = (
+        scanned is not None
+        and abs(scanned.reference_scale - SCRIPTED_SCALE / 1.3) < 0.05
+        and (data_dir / "hand_profile.json").exists()
+    )
+    dwell_on("scan.done")
+
     # Someone farther away points at a button: their hand is set aside, nothing happens.
     x, y = centre_of("menu.add")
     tracking.other_hands = (make_hand("point", x, y),)
@@ -185,7 +229,7 @@ def run(screenshot: Path | None = None) -> dict:
     frames(3)
     box_after = controller.scene.find("box-1").position
     checks["pinch drags the box sideways"] = box_after[0] > box_before[0] + 0.5
-    checks["drag keeps depth"] = abs(box_after[2] - box_before[2]) < 1e-6
+    checks["without 3D landmarks, drag keeps depth"] = abs(box_after[2] - box_before[2]) < 1e-6
 
     undo_depth = len(controller.history.past)
     controller.key("control-z")
@@ -237,6 +281,57 @@ def run(screenshot: Path | None = None) -> dict:
         controller.scene.find("sphere-1") is not None
         and controller.scene.find("cylinder-1") is not None
         and all(obj.kind != "group" for obj in controller.scene.objects)
+    )
+
+    # The scanned virtual hand: a pinch must really touch the box, then drags it in depth.
+    from holostudio.avatar.profile import HandProfile, bone_lengths
+
+    shape = world_of(make_hand("pinch", 0.5, 0.5))
+    controller.profile = HandProfile(bone_lengths(shape), SCRIPTED_SCALE)
+    rig = app.scene_view.view_rig()
+
+    def depth_of(position) -> float:
+        return float((np.asarray(position) - rig.origin) @ rig.forward)
+
+    def hand3d(gesture: str, position, distance: float):
+        x, y = screen_of(position)
+        image = at_distance(make_hand(gesture, x, y), distance)
+        return image, world_of(make_hand(gesture, x, y))
+
+    def frames3d(count: int, *hands) -> None:
+        tracking.world_hands = tuple(world for _image, world in hands)
+        frames(count, tuple(image for image, _world in hands))
+
+    box = controller.scene.find("box-1").position
+    box_distance = depth_of(box) / rig.reach
+    frames3d(4, hand3d("open-palm", box, box_distance))
+    checks["a scanned hand is drawn as a 3D hand"] = bool(app.virtual_hands) and any(
+        not node.path.isHidden() for node in app.hand_view._nodes
+    )
+    frames3d(8, hand3d("pinch", box, box_distance * 0.55))  # in the air, in front of it
+    frames3d(3, hand3d("open-palm", box, box_distance * 0.55))
+    checks["a pinch in front of the box grabs nothing"] = (
+        controller.scene.find("box-1").position == box
+    )
+
+    frames3d(8, hand3d("pinch", box, box_distance))  # fingertips on the box
+    for step in range(1, 16):
+        frames3d(1, hand3d("pinch", box, box_distance * (1 - 0.02 * step)))
+    frames3d(3, hand3d("open-palm", box, box_distance * 0.7))
+    tracking.world_hands = ()
+    frames(3)
+    moved = controller.scene.find("box-1").position
+    checks["a touching pinch pulls the box toward the viewer"] = depth_of(moved) < depth_of(
+        box
+    ) - 1.0 and np.allclose(screen_of(moved), screen_of(box), atol=0.03)
+    controller.key("control-z")
+    checks["the whole 3D drag is one undo step"] = controller.scene.find("box-1").position == box
+
+    controller.profile = scanned
+    dwell_on("menu.scan")
+    dwell_on("scan.off")
+    checks["Tắt tay 3D goes back to the cursor"] = (
+        controller.profile is None and not (data_dir / "hand_profile.json").exists()
     )
 
     dwell_on("menu.toggle")

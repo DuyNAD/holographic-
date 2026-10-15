@@ -26,6 +26,11 @@ class HandFrame:
     timestamp: float = 0.0
     # Hands of other people in view: ignored for control, drawn grey in the preview.
     other_hands: tuple[Hand, ...] = ()
+    # The same hands in metres (MediaPipe world landmarks, centred on the hand), in the
+    # same order as `hands`: the true 3D shape, used for the virtual hand.
+    world_hands: tuple[Hand, ...] = ()
+    # Camera frame width / height, to measure hand size without stretching.
+    aspect: float = 16 / 9
 
 
 @dataclass(frozen=True)

@@ -95,3 +95,47 @@ def test_two_hands_are_followed_by_position():
     gestures = engine.update(tracking([right, left], ["Left", "Left"], 2))
     by_x = sorted(gestures, key=lambda g: g.landmarks[0].x)
     assert [g.name for g in by_x] == ["point", "fist"]
+
+
+def test_engine_smooths_and_reports_the_3d_hand_shape():
+    from holostudio.tracking.types import Landmark
+
+    engine = GestureEngine()
+    world = tuple(Landmark(0.01 * i, -0.01 * i, 0.0) for i in range(21))
+    for step in range(3):
+        frame = HandFrame(
+            (make_hand((0,)),), ("Right",), step / 30, world_hands=(world,), aspect=4 / 3
+        )
+        engine.update(TrackingState("tracking", "", frame))
+    (hand,) = engine.hands
+    assert hand.aspect == 4 / 3 and hand.gesture == "point"
+    assert hand.world[5].x == pytest.approx(0.05)
+    assert engine.gestures[0].world[5].x == pytest.approx(0.05)
+
+
+def test_engine_without_world_landmarks_reports_an_empty_shape():
+    engine = GestureEngine()
+    for step in range(3):
+        engine.update(tracking([make_hand((0,))], ["Right"], step / 30))
+    assert engine.hands[0].world == ()
+
+
+def test_hand_distance_is_measured_on_the_raw_frame_and_ignores_finger_motion():
+    from holostudio.tracking.types import Landmark
+
+    engine = GestureEngine()
+
+    def frame(hand, step):
+        wrist = hand[0]
+        world = tuple(Landmark((p.x - wrist.x) * 16 / 9 / 3, (p.y - wrist.y) / 3, 0) for p in hand)
+        return TrackingState(
+            "tracking", "", HandFrame((hand,), ("Right",), step / 30, world_hands=(world,))
+        )
+
+    for step in range(5):
+        engine.update(frame(make_hand((0,)), step))
+    assert engine.hands[0].scale == pytest.approx(3.0)
+    # The fingers snap open: the smoothed image and 3D shapes lag differently, but the
+    # measured distance does not jump.
+    engine.update(frame(make_hand((0, 1, 2, 3)), 5))
+    assert engine.hands[0].scale == pytest.approx(3.0)

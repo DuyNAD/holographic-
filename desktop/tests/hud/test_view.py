@@ -76,6 +76,14 @@ def test_every_hud_character_exists_in_the_font(hud):
         HudContext(1280, 720, collapsed=True, camera_busy=True),
         HudContext(1280, 720, panel="group", grouping=True, group_count=1),
         HudContext(1280, 720, panel="group", grouping=True, group_count=3),
+        HudContext(1280, 720, panel="scan", scanning=True, hand_scanned=True),
+        HudContext(1280, 720, panel="scan", scan_done=True, hand_scanned=True),
+    ]
+    from holostudio.avatar.scan import MESSAGES
+
+    contexts += [
+        HudContext(1280, 720, panel="scan", scanning=True, scan_message=message)
+        for message in MESSAGES.values()
     ]
     for step in range(5):
         view = describe(step, CalibrationInputs(step % 2 == 0, False, True, step > 2))
@@ -113,3 +121,15 @@ def test_hands_of_other_people_are_drawn_grey():
     user_pixel, other_pixel = preview[180, 479], preview[180, 160]
     assert user_pixel[1] > 200 and user_pixel[0] != user_pixel[1]  # coloured
     assert other_pixel[0] == other_pixel[1] == other_pixel[2] > 0  # grey
+
+
+def test_scan_box_and_progress_are_drawn_on_the_preview():
+    image = np.zeros((360, 640, 3), np.uint8)
+    box = (0.25, 0.25, 0.5, 0.75)
+    preview = prepare_preview(image, (), 16 / 9, scan_box=(box, 0.5))
+    # Mirrored: camera x 0.25..0.5 becomes preview x 320..480.
+    assert preview[90, 320:330].any() and preview[90, 470:480].any()
+    assert not preview[90, 100:300].any()
+    bar = preview[min(270 + 6, 357), 320:480]
+    filled = bar[:, 0] > 200  # the cyan part (blue channel)
+    assert 0.4 < filled.mean() < 0.6

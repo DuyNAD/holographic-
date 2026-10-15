@@ -137,4 +137,5 @@ def _keep_nearest_user(frame: HandFrame, mask: tuple[bool, ...]) -> HandFrame:
         hands=tuple(frame.hands[i] for i in keep),
         handedness=tuple(frame.handedness[i] for i in keep if i < len(frame.handedness)),
         other_hands=tuple(frame.hands[i] for i in drop),
+        world_hands=tuple(frame.world_hands[i] for i in keep if i < len(frame.world_hands)),
     )

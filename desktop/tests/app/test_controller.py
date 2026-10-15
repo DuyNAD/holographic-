@@ -262,3 +262,75 @@ def test_ungroup_only_works_on_a_group(make):
     controller.press("menu.ungroup")
     assert controller.scene.find("box-1") is not None
     assert len(controller.history.past) == 0
+
+
+# --- hand scan (virtual hand) ---------------------------------------------------
+
+
+def make_with_profile(tmp_path, calibrated=True):
+    return StudioController(
+        library=ModelLibrary(tmp_path / "library", parse=lambda _p: None),
+        camera=FakeCamera(),
+        scene_file=tmp_path / "scene.json",
+        settings_file=tmp_path / "settings.json",
+        calibrated=calibrated,
+        pick_file=lambda: None,
+        clock=Clock(),
+        profile_file=tmp_path / "hand_profile.json",
+    )
+
+
+def scan_hands():
+    from holostudio.gestures.engine import TrackedHand
+
+    from ..avatar.test_depth import ASPECT, WORLD, project
+
+    return (TrackedHand(1, project(WORLD, (0.5, 0.5), 3.0), WORLD, "open-palm", ASPECT),)
+
+
+def test_first_start_asks_for_a_scan_and_saves_the_hand(tmp_path):
+    from holostudio.avatar.scan import SCAN_FRAMES
+
+    controller = make_with_profile(tmp_path)
+    assert controller.scanning and controller.panel == "scan"
+    assert hud(controller).scan_message == "Đưa bàn tay vào khung"
+
+    for _ in range(SCAN_FRAMES):
+        controller.update_scan(scan_hands())
+    assert not controller.scanning and controller.profile is not None
+    context = hud(controller)
+    assert context.scan_done and context.hand_scanned and context.scan_progress == 1.0
+    assert (tmp_path / "hand_profile.json").exists()
+
+    controller.press("scan.done")
+    assert controller.panel is None
+    # Next start: the saved hand is used straight away.
+    again = make_with_profile(tmp_path)
+    assert again.profile.bones == pytest.approx(controller.profile.bones, abs=1e-5)
+    assert not again.scanning
+
+
+def test_scan_waits_for_calibration_and_can_be_cancelled_or_turned_off(tmp_path):
+    controller = make_with_profile(tmp_path, calibrated=False)
+    assert not controller.scanning  # calibration first
+    controller.calibration.step = 4
+    controller.press("calibration.finish")
+    assert controller.scanning
+
+    controller.press("scan.cancel")
+    assert not controller.scanning and controller.panel is None
+    controller.press("menu.scan")
+    controller.press("menu.add")  # another panel ends the scan
+    assert controller.scan is None and controller.panel == "add"
+
+    controller.profile = "a scanned hand"
+    (tmp_path / "hand_profile.json").write_text("{}", encoding="utf-8")
+    controller.press("menu.scan")
+    controller.press("scan.off")
+    assert controller.profile is None and not (tmp_path / "hand_profile.json").exists()
+
+
+def test_without_a_profile_file_there_is_no_scan(make):
+    controller, _ = make()
+    controller.press("menu.scan")
+    assert controller.scan is None and controller.profile is None

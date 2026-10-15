@@ -16,15 +16,25 @@ from panda3d.core import WindowProperties
 from holostudio import config
 from holostudio.assets.library import ModelLibrary
 from holostudio.assets.loader import load_glb
+from holostudio.avatar.mesh import hand_size
+from holostudio.avatar.pose import VirtualHand, solve
+from holostudio.avatar.profile import HandProfile
+from holostudio.avatar.scan import SCAN_BOX
 from holostudio.calibration.flow import load_calibrated
 from holostudio.camera.capture import CameraStream
 from holostudio.gestures.engine import GestureEngine
 from holostudio.hud.camera_preview import prepare_preview
 from holostudio.hud.view import HudView
 from holostudio.hud.widgets import Widget, build_hud, over_hud, press_target
-from holostudio.interaction.manipulator import GestureManipulator, ViewQueries
+from holostudio.interaction.manipulator import (
+    GestureManipulator,
+    ViewQueries,
+    grab_point,
+    grab_reach,
+)
 from holostudio.interaction.pinch_tap import PinchTaps
-from holostudio.interaction.pointer import HandPointer
+from holostudio.interaction.pointer import HandPointer, PointerFrame
+from holostudio.rendering.hand_view import HandView
 from holostudio.rendering.scene_view import SceneView
 from holostudio.tracking.worker import TrackingWorker
 
@@ -89,6 +99,7 @@ class StudioApp(ShowBase):
             pick_file=pick_file,
             on_camera_start=self.tracking.start,
             clock=clock,
+            profile_file=data_dir / "hand_profile.json",
         )
 
         self.scene_view = SceneView(self, self._model_path, load_glb)
@@ -102,12 +113,17 @@ class StudioApp(ShowBase):
                 self.scene_view.ray,
                 self._over_hud,
                 self.scene_view.camera_axes,
+                self.scene_view.touch,
             ),
             self.controller.dispatch,
             clock=clock,
         )
         self._last_preview_index = -1
         self.pinch_taps = PinchTaps()
+        self.hand_view = HandView(self)
+        self.profile: HandProfile | None = None
+        self.set_profile(self.controller.profile)
+        self.virtual_hands: dict[int, VirtualHand] = {}
 
         self.accept("mouse1", self._on_click)
         self.accept("window-event", self._on_window_event)
@@ -126,6 +142,11 @@ class StudioApp(ShowBase):
 
     def _model_path(self, asset_id: str) -> Path | None:
         return self.library.path_of(asset_id) if self.library.get(asset_id) else None
+
+    def set_profile(self, profile: HandProfile | None) -> None:
+        """Turns the virtual hand on (with this scanned hand) or off."""
+        self.profile = profile
+        self.hand_view.size = hand_size(profile.bones) if profile else 1.0
 
     # --- size helpers --------------------------------------------------------
 
@@ -178,11 +199,15 @@ class StudioApp(ShowBase):
         width, height = self._size()
         self.widgets = build_hud(controller.hud_context(width, height, tracking, gestures))
 
+        controller.update_scan(self.gestures.hands)
+        if controller.profile is not self.profile:
+            self.set_profile(controller.profile)
+        self.virtual_hands = self._solve_virtual_hands()
         pointer_frame = self.pointer.update(gestures, self._clock())
         if pointer_frame.pressed:
             controller.press(pointer_frame.pressed)
 
-        if controller.calibration.open:
+        if controller.calibration.open or controller.scanning:
             self.manipulator.reset()
             self.pinch_taps.reset()
         elif controller.grouping:
@@ -195,7 +220,7 @@ class StudioApp(ShowBase):
                         controller.toggle_group_pick(object_id)
         else:
             self.pinch_taps.update(gestures)
-            self.manipulator.update(gestures, controller.scene)
+            self.manipulator.update(gestures, controller.scene, self.virtual_hands)
 
         controller.tick()
         # Rebuild after presses so the HUD shows their effect in the same frame.
@@ -203,8 +228,32 @@ class StudioApp(ShowBase):
         marked = frozenset(controller.group_picks) if controller.grouping else frozenset()
         self.scene_view.sync(controller.scene, marked)
         self.hud.render_widgets(self.widgets, width, height)
+        self._draw_virtual_hands()
+        if self.virtual_hands:
+            # The virtual hand replaces the cursors; only the pressing fingertip stays.
+            marks = tuple(mark for mark in pointer_frame.marks if mark.is_pointer)
+            pointer_frame = PointerFrame(
+                marks, pointer_frame.hover, pointer_frame.progress, pointer_frame.pressed
+            )
         self.hud.render_pointer(pointer_frame, width, height)
         self._update_preview(tracking)
+
+    def _solve_virtual_hands(self) -> dict[int, VirtualHand]:
+        if self.profile is None or self.controller.calibration.open or self.controller.scanning:
+            return {}
+        rig = self.scene_view.view_rig()
+        solved = (solve(hand, self.profile, rig) for hand in self.gestures.hands)
+        return {hand.track_id: hand for hand in solved if hand is not None}
+
+    def _draw_virtual_hands(self) -> None:
+        touching = {
+            track_id
+            for track_id, hand in self.virtual_hands.items()
+            if self.scene_view.touch(grab_point(hand), grab_reach(hand)) is not None
+        }
+        if self.manipulator.dragging_hand is not None:
+            touching.add(self.manipulator.dragging_hand)
+        self.hand_view.update(tuple(self.virtual_hands.values()), frozenset(touching))
 
     def _update_preview(self, tracking) -> None:
         frame = self.camera_stream.latest_frame()
@@ -216,8 +265,15 @@ class StudioApp(ShowBase):
             return
         self._last_preview_index = frame.index
         hands = tracking.frame.hands if tracking.status == "tracking" else ()
+        scan = self.controller.scan
         self.hud.update_camera(
-            prepare_preview(frame.image, hands, self.hud.camera_aspect, tracking.frame.other_hands)
+            prepare_preview(
+                frame.image,
+                hands,
+                self.hud.camera_aspect,
+                tracking.frame.other_hands,
+                scan_box=(SCAN_BOX, scan.status.progress) if scan else None,
+            )
         )
 
     def _frame(self, task):

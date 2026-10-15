@@ -24,6 +24,7 @@ from panda3d.core import (
     Vec3,
 )
 
+from holostudio.avatar.pose import ViewRig
 from holostudio.interaction.coordinates import ScreenPoint, screen_to_ndc
 from holostudio.scene.state import SceneObject, SceneState
 
@@ -31,6 +32,7 @@ from .geometry import SHAPE_BUILDERS, make_box
 from .transforms import apply_transform, panda_to_scene, scene_to_panda
 
 OBJECT_TAG = "object_id"
+BOUNDS_TAG = "local_bounds"  # the body's box in the object's own space, for touching
 PICK_MASK = BitMask32.bit(1)
 CAMERA_POSITION = (6.5, 4.3, 7.5)  # scene coordinates, as in the original app
 VERTICAL_FOV = 42.0
@@ -178,9 +180,12 @@ class SceneView:
         body = self._build_body(obj, holder)
         body.setCollideMask(PICK_MASK)
 
+        bounds = body.getTightBounds(holder)
+        if bounds:
+            holder.setPythonTag(BOUNDS_TAG, (np.array(bounds[0]), np.array(bounds[1])))
         outline = holder.attachNewNode(make_box(1.0))
         outline.setName("selection-outline")
-        if obj.kind == "group" and (bounds := body.getTightBounds(holder)):
+        if obj.kind == "group" and bounds:
             low, high = bounds
             outline.setPos((low + high) / 2)
             outline.setScale((high - low) * 1.08 + Vec3(0.15, 0.15, 0.15))
@@ -242,12 +247,45 @@ class SceneView:
                 return tagged.getPythonTag(OBJECT_TAG)
         return None
 
+    def touch(self, point, reach: float) -> str | None:
+        """The object whose surface is within `reach` of a scene point (nearest first)."""
+        best, best_gap = None, reach
+        world = Point3(*scene_to_panda(point))
+        for object_id, (_obj, node) in self._nodes.items():
+            bounds = node.getPythonTag(BOUNDS_TAG)
+            if bounds is None:
+                continue
+            local = np.array(node.getRelativePoint(self._base.render, world))
+            low, high = bounds
+            gap = (
+                np.linalg.norm(local - np.clip(local, low, high))
+                * node.getScale(self._base.render).x
+            )
+            if gap <= best_gap:
+                best, best_gap = object_id, gap
+        return best
+
     def camera_axes(self) -> tuple[np.ndarray, np.ndarray]:
         """The camera's right and up directions, in scene coordinates."""
         quat = self._base.camera.getQuat(self._base.render)
         right = np.array(panda_to_scene(quat.getRight()))
         up = np.array(panda_to_scene(quat.getUp()))
         return right / np.linalg.norm(right), up / np.linalg.norm(up)
+
+    def view_rig(self) -> ViewRig:
+        """The 3D camera for placing the virtual hand."""
+        quat = self._base.camera.getQuat(self._base.render)
+        right, up = self.camera_axes()
+        forward = np.array(panda_to_scene(quat.getForward()))
+        return ViewRig(
+            origin=np.array(CAMERA_POSITION, dtype=float),
+            right=right,
+            up=up,
+            forward=forward / np.linalg.norm(forward),
+            ray=lambda point: self.ray(point)[1],
+            tan_half_fov=math.tan(math.radians(VERTICAL_FOV / 2)),
+            reach=math.dist(CAMERA_POSITION, (0, 0, 0)),
+        )
 
     def ray(self, point: ScreenPoint) -> tuple[np.ndarray, np.ndarray]:
         """Camera ray through a screen point, in scene coordinates."""

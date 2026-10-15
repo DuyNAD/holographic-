@@ -12,6 +12,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from holostudio.assets.library import ModelLibrary
+from holostudio.avatar.profile import HandProfile, load_profile, save_profile
+from holostudio.avatar.scan import HandScan
 from holostudio.calibration.flow import (
     Calibration,
     CalibrationInputs,
@@ -19,7 +21,7 @@ from holostudio.calibration.flow import (
 )
 from holostudio.camera.capture import STATUS_LABELS, CameraStream
 from holostudio.config import UNDO_TOAST_SECONDS
-from holostudio.gestures.engine import GESTURE_LABELS, StableGesture
+from holostudio.gestures.engine import GESTURE_LABELS, StableGesture, TrackedHand
 from holostudio.hud.widgets import HudContext, LibraryEntry
 from holostudio.scene.history import HistoryAction, Redo, Undo, create_history, reduce_history
 from holostudio.scene.state import (
@@ -49,6 +51,7 @@ GUIDE_ROWS = (
     ("Mở tay", "Mở bàn tay đang nắm hoặc chụm", "Thả vật thể"),
     ("Hai tay chụm", "Chụm ngón trên hai tay", "Đổi kích thước"),
     ("Ghép khối", "Bấm Ghép, chụm vào từng khối", "Gộp thành 1 khối"),
+    ("Tay 3D", "Quét tay, rồi chụm khi chạm vào vật", "Cầm, kéo cả xa gần"),
 )
 
 KEY_ACTIONS: dict[str, HistoryAction] = {
@@ -80,7 +83,9 @@ class StudioController:
         pick_file: Callable[[], Path | None],
         on_camera_start: Callable[[], None] = lambda: None,
         clock: Callable[[], float] = time.monotonic,
+        profile_file: Path | None = None,
     ) -> None:
+        """`profile_file`: where the scanned hand is kept; None turns the virtual hand off."""
         self.library = library
         self.camera = camera
         self._scene_file = scene_file
@@ -104,6 +109,12 @@ class StudioController:
         self._saved_objects = self.history.present.objects
         self._dirty_since: float | None = None
         self._calibration_inputs = CalibrationInputs(False, False, False, False)
+        # The virtual hand: the scanned hand in use, and the scan in progress (if any).
+        self._profile_file = profile_file
+        self.profile: HandProfile | None = load_profile(profile_file) if profile_file else None
+        self.scan: HandScan | None = None
+        if profile_file and self.profile is None and not self.calibration.open:
+            self.start_scan()  # first start: ask for the hand
 
     # --- scene ---------------------------------------------------------------
 
@@ -149,11 +160,23 @@ class StudioController:
             self.collapsed = not self.collapsed
             self.panel = None
             self.stop_grouping()
+            self.stop_scan()
         elif widget_id in ("menu.add", "menu.guide"):
             self.stop_grouping()
+            self.stop_scan()
             name = widget_id.removeprefix("menu.")
             self.panel = None if self.panel == name else name
+        elif widget_id == "menu.scan":
+            if self.scan is not None:
+                self.stop_scan()
+            else:
+                self.start_scan()
+        elif widget_id in ("scan.cancel", "scan.done"):
+            self.stop_scan()
+        elif widget_id == "scan.off":
+            self.forget_hand()
         elif widget_id == "menu.group":
+            self.stop_scan()
             if self.grouping:
                 self.stop_grouping()
             else:
@@ -169,6 +192,7 @@ class StudioController:
         elif widget_id == "panel.close":
             self.panel = None
             self.stop_grouping()
+            self.stop_scan()
         elif widget_id.startswith("shape."):
             obj = create_shape_object(widget_id.removeprefix("shape."), self._spawn())
             self.dispatch(AddObject(obj))
@@ -205,6 +229,7 @@ class StudioController:
             else:
                 self.panel = None
                 self.stop_grouping()
+                self.stop_scan()
             return
         if self.calibration.open:
             return
@@ -261,6 +286,42 @@ class StudioController:
         if selected is not None and selected.kind == "group":
             self.dispatch(UngroupObject(selected.id))
 
+    # --- hand scan (virtual hand) ----------------------------------------------
+
+    @property
+    def scanning(self) -> bool:
+        """Measuring the hand right now (the panel may stay open after it is done)."""
+        return self.scan is not None and self.scan.profile is None
+
+    def start_scan(self) -> None:
+        if self._profile_file is None:
+            return
+        self.stop_grouping()
+        self.scan = HandScan()
+        self.panel = "scan"
+
+    def stop_scan(self) -> None:
+        if self.scan is not None:
+            self.scan = None
+            if self.panel == "scan":
+                self.panel = None
+
+    def update_scan(self, hands: tuple[TrackedHand, ...]) -> None:
+        """Feeds the scan; when it is done the new hand is saved and used at once."""
+        if not self.scanning:
+            return
+        self.scan.update(hands)
+        if self.scan.profile is not None:
+            self.profile = self.scan.profile
+            save_profile(self.profile, self._profile_file)
+
+    def forget_hand(self) -> None:
+        """Back to the cursor: the measurements are deleted (scan again any time)."""
+        self.profile = None
+        self.stop_scan()
+        if self._profile_file is not None:
+            self._profile_file.unlink(missing_ok=True)
+
     @property
     def camera_running(self) -> bool:
         """The camera is open, even if it only delivers black frames."""
@@ -280,6 +341,8 @@ class StudioController:
             self._on_camera_start()
         elif effect == "complete":
             save_calibrated(self._settings_file)
+            if self._profile_file and self.profile is None:
+                self.start_scan()
 
     def _upload(self) -> None:
         path = self._pick_file()
@@ -352,6 +415,11 @@ class StudioController:
             selected_is_group=selected is not None and selected.kind == "group",
             grouping=self.grouping,
             group_count=sum(1 for object_id in self.group_picks if self.scene.find(object_id)),
+            scanning=self.scanning,
+            scan_message=self.scan.status.message if self.scan else "",
+            scan_progress=round(self.scan.status.progress, 2) if self.scan else 0.0,
+            scan_done=self.scan is not None and self.scan.profile is not None,
+            hand_scanned=self.profile is not None,
             gesture_label=gesture_label,
             confidence=confidence,
             camera_badge=STATUS_LABELS[self.camera.status],
